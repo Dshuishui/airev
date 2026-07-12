@@ -15,5 +15,9 @@ chmod +x "$BIN_DIR/airev"
 echo "airev: installed. version: $("$BIN_DIR/airev" version)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) echo "airev: ready — run 'airev init' inside a repo." ;;
-  *) echo "airev: add $BIN_DIR to your PATH, e.g.  export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  *)
+    echo "airev: $BIN_DIR is not on your PATH yet. Add it:"
+    echo "  export PATH=\"$BIN_DIR:\$PATH\"                     # this shell"
+    echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc  # persist (use ~/.bashrc for bash)"
+    ;;
 esac

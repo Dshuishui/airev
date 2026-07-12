@@ -32,6 +32,10 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 # 1) install (single file, no sudo — drops into ~/.local/bin)
 curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/install.sh | bash
 
+# 1b) if `airev` isn't found, ~/.local/bin isn't on your PATH — add it:
+export PATH="$HOME/.local/bin:$PATH"                    # this shell
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc # persist (use ~/.bashrc for bash)
+
 # 2) in a repo you want reviewed
 cd your-repo
 airev init            # installs the pre-push hook + .airev/guidelines.md + .airev.conf
