@@ -36,7 +36,15 @@ curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/install.sh | b
 cd your-repo
 airev init            # installs the pre-push hook + .airev/guidelines.md + .airev.conf
 
-# 3) just work — on `git push` it reviews your changes and prints findings
+# 3) just work — on `git push` it reviews your changes *before* they go up
+```
+
+On push, airev reviews the diff first. If it finds a `[P0]`/`[P1]`, it asks
+`Push anyway? [y/N]` — answer `N` to abort, fix, and push again; `y` to proceed.
+Clean diffs push straight through. Every review is saved locally:
+
+```bash
+airev last          # re-read the last review (kept in .git/, never committed)
 ```
 
 Prefer not to pipe to bash? It's one file — download it and put it on your PATH:
@@ -99,7 +107,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.1 — `init` + `review`, severity grading, `--gate`, specify CLI
 - [x] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …) + large-diff truncation (`MAX_DIFF_LINES`)
 - [x] v0.3 — CI mode (GitHub Actions workflow), `--json` output, `airev upgrade`
-- [ ] v0.4 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
+- [x] v0.4 — review *before* the push completes: prompt to fix-or-proceed on P0/P1, saved result (`airev last`)
+- [ ] v0.5 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
 
 ## License
 
