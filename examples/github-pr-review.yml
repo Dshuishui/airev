@@ -1,0 +1,56 @@
+# airev — review every pull request with Claude, right in CI.
+#
+# Copy this file to  .github/workflows/airev.yml  in your repo, then add an
+# ANTHROPIC_API_KEY repo secret (Settings → Secrets and variables → Actions).
+#
+# The job installs the Claude CLI + airev, reviews the PR diff, posts the
+# findings as a PR comment, and fails the check on any [P0]/[P1] finding.
+
+name: airev review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                 # need the base branch for the diff
+
+      - name: Install Claude CLI + airev
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/airev \
+            -o /usr/local/bin/airev && chmod +x /usr/local/bin/airev
+
+      - name: Review the PR diff
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -o pipefail
+          airev review --cli claude --base "origin/${{ github.base_ref }}" \
+            | tee review.txt
+          # capture gate result without stopping the job (so we can comment first)
+          airev review --cli claude --base "origin/${{ github.base_ref }}" --gate \
+            >/dev/null 2>&1 && echo "gate=pass" >>"$GITHUB_OUTPUT" || echo "gate=fail" >>"$GITHUB_OUTPUT"
+
+      - name: Comment findings on the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo '### 🤖 airev review'; echo; echo '```'; cat review.txt; echo '```'; } > body.md
+          gh pr comment "${{ github.event.number }}" --body-file body.md
+
+      - name: Fail on P0/P1
+        if: steps.review.outputs.gate == 'fail'
+        run: |
+          echo "airev found P0/P1 findings — see the PR comment." >&2
+          exit 1

@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.2.0"
+AIREV_VERSION="0.3.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -64,12 +64,13 @@ _guidelines() {
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0
+  local cli_flag="" base_flag="" gate=0 json=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)  cli_flag="$2"; shift 2 ;;
       --base) base_flag="$2"; shift 2 ;;
       --gate) gate=1; shift ;;
+      --json) json=1; shift ;;
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
@@ -102,19 +103,51 @@ cmd_review() {
     truncated=1
   fi
 
-  echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")) ──"
+  [ "$json" -eq 0 ] && echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")) ──"
   local out
   out="$(printf '%s' "$diff" | _run_cli "$cli" "$(_guidelines)" 2>/dev/null)" \
-    || { echo "airev: '$cli' failed (not logged in?). Skipping."; return 0; }
-  printf '%s\n' "$out"
-  [ "$truncated" = 1 ] && echo "airev: note — diff was truncated to $max_lines lines (raise MAX_DIFF_LINES to review more)."
-  echo "──────────────────────────────────────────"
+    || { [ "$json" -eq 1 ] && echo '[]' || echo "airev: '$cli' failed (not logged in?). Skipping."; return 0; }
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$out" | _to_json; echo
+  else
+    printf '%s\n' "$out"
+    [ "$truncated" = 1 ] && echo "airev: note — diff was truncated to $max_lines lines (raise MAX_DIFF_LINES to review more)."
+    echo "──────────────────────────────────────────"
+  fi
 
   if [ "$gate" -eq 1 ] && printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]'; then
-    echo "airev: P0/P1 findings — gate FAILED (use 'git push --no-verify' to override)." >&2
+    echo "airev: P0/P1 findings — gate FAILED." >&2
     return 1
   fi
   return 0
+}
+
+# Parse [P0]/[P1]/[P2] lines (stdin) into a JSON array of findings.
+_to_json() {
+  local first=1 line sev rest
+  printf '['
+  while IFS= read -r line; do
+    case "$line" in
+      \[P0\]*|\[P1\]*|\[P2\]*)
+        sev="${line:1:2}"; rest="${line#*] }"
+        rest="${rest//\\/\\\\}"; rest="${rest//\"/\\\"}"
+        [ "$first" -eq 1 ] || printf ','
+        printf '{"severity":"%s","finding":"%s"}' "$sev" "$rest"
+        first=0 ;;
+    esac
+  done
+  printf ']'
+}
+
+# Re-download the latest airev over this same file (borrowed from codegraph's `upgrade`).
+cmd_upgrade() {
+  local dest; dest="$(command -v airev 2>/dev/null || echo "$AIREV_HOME/airev")"
+  echo "airev: upgrading $dest ..."
+  curl -fsSL "https://raw.githubusercontent.com/Dshuishui/airev/main/airev" -o "$dest.tmp" \
+    && chmod +x "$dest.tmp" && mv "$dest.tmp" "$dest" \
+    && echo "airev: now $("$dest" version)" \
+    || { echo "airev: upgrade failed." >&2; rm -f "$dest.tmp"; return 1; }
 }
 
 cmd_init() {
@@ -135,8 +168,9 @@ EOF
 }
 
 case "${1:-help}" in
-  review) shift; cmd_review "$@" ;;
-  init)   shift; cmd_init "$@" ;;
+  review)  shift; cmd_review "$@" ;;
+  init)    shift; cmd_init "$@" ;;
+  upgrade) shift; cmd_upgrade "$@" ;;
   version|--version|-v) echo "airev $AIREV_VERSION" ;;
   help|--help|-h|*)
     cat <<EOF
@@ -146,10 +180,13 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
   airev review [opts]            review pending changes now
       --cli <name>   claude | codex | gemini | copilot  (else \$AIREV_CLI, conf, autodetect)
       --base <ref>   diff base (default: upstream, else origin/main)
-      --gate         exit non-zero on [P0]/[P1] findings (block push)
+      --gate         exit non-zero on [P0]/[P1] findings (block push / fail CI)
+      --json         emit findings as JSON (for CI / tooling)
+  airev upgrade                  update airev in place to the latest version
   airev version
 
 Config: repo .airev.conf (CLI=, BASE=) and .airev/guidelines.md (review rules).
+CI: run 'airev review --base origin/\$BASE --gate' in a PR job (see README).
 EOF
     ;;
 esac

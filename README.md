@@ -56,6 +56,28 @@ airev review --base origin/main      # choose the diff base
 airev review --gate                  # exit non-zero on [P0]/[P1] (block push)
 ```
 
+## Run in CI (GitHub Actions)
+
+Same tool, on every pull request. Copy
+[`examples/github-pr-review.yml`](examples/github-pr-review.yml) to
+`.github/workflows/airev.yml`, add an `ANTHROPIC_API_KEY` repo secret, and each
+PR gets reviewed by Claude — findings posted as a comment, the check failing on
+any `[P0]`/`[P1]`.
+
+Locally it reuses your logged-in CLI; in CI it uses the key. `--json` gives
+machine-readable output for your own tooling:
+
+```bash
+airev review --base origin/main --json
+# [{"severity":"P0","finding":"auth.py:42 hardcoded secret ..."}, ...]
+```
+
+## Upgrade
+
+```bash
+airev upgrade      # pulls the latest airev over your current install
+```
+
 ## Configuration
 
 Per-repo, created by `airev init`:
@@ -76,7 +98,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 
 - [x] v0.1 — `init` + `review`, severity grading, `--gate`, specify CLI
 - [x] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …) + large-diff truncation (`MAX_DIFF_LINES`)
-- [ ] v0.3 — JSON/CI mode, `--fix` loop, npx/brew distribution
+- [x] v0.3 — CI mode (GitHub Actions workflow), `--json` output, `airev upgrade`
+- [ ] v0.4 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
 
 ## License
 
