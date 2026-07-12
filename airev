@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# airev — AI code review before you push. A thin wrapper over the AI CLI you
+# already have logged in (claude / codex / gemini / copilot). No API keys, runs
+# locally, advisory by default. v0.1 (placeholder name).
+set -uo pipefail
+AIREV_VERSION="0.1.0"
+AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_root() { git rev-parse --show-toplevel 2>/dev/null; }
+
+# Load repo config (.airev.conf: shell key=value, e.g. CLI=claude BASE=origin/main)
+_load_conf() {
+  local root; root="$(_root)" || return 0
+  [ -n "$root" ] && [ -f "$root/.airev.conf" ] && . "$root/.airev.conf" || true
+}
+
+# CLI resolution: --cli flag > $AIREV_CLI > conf CLI= > autodetect
+_resolve_cli() {
+  local pick="${1:-}"
+  [ -n "$pick" ] && { echo "$pick"; return; }
+  [ -n "${AIREV_CLI:-}" ] && { echo "$AIREV_CLI"; return; }
+  [ -n "${CLI:-}" ] && { echo "$CLI"; return; }
+  local c
+  for c in claude codex gemini copilot; do
+    command -v "$c" >/dev/null 2>&1 && { echo "$c"; return; }
+  done
+  echo ""
+}
+
+# Run the chosen CLI: instruction as arg, diff arrives on stdin.
+_run_cli() {
+  local cli="$1" instruction="$2" diff; diff="$(cat)"
+  case "$cli" in
+    claude)  printf '%s' "$diff" | claude -p --output-format text "$instruction" ;;
+    codex)   codex exec "$instruction"$'\n\n'"$diff" ;;
+    gemini)  printf '%s' "$diff" | gemini -p "$instruction" ;;
+    copilot) printf '%s' "$diff" | copilot -p "$instruction" ;;
+    *) echo "airev: unknown CLI '$cli' (supported: claude codex gemini copilot)" >&2; return 2 ;;
+  esac
+}
+
+_default_guidelines() {
+  cat <<'EOF'
+You are a senior engineer reviewing a git diff before it is pushed. Report only
+real, actionable problems — no praise, no restating the code. For EACH finding,
+start the line with a severity tag:
+
+  [P0]  correctness bug, data loss, security hole — must fix before push
+  [P1]  likely bug / missing error handling / risky edge case — should fix
+  [P2]  style, naming, dead code, minor simplification — nice to have
+
+Be concise: one line per finding, include file:line. If the diff is clean,
+reply exactly: LGTM
+EOF
+}
+
+_guidelines() {
+  local root; root="$(_root)"
+  if [ -n "$root" ] && [ -f "$root/.airev/guidelines.md" ]; then
+    cat "$root/.airev/guidelines.md"
+  else
+    _default_guidelines
+  fi
+}
+
+cmd_review() {
+  local cli_flag="" base_flag="" gate=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cli)  cli_flag="$2"; shift 2 ;;
+      --base) base_flag="$2"; shift 2 ;;
+      --gate) gate=1; shift ;;
+      *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
+    esac
+  done
+  _load_conf
+
+  local cli; cli="$(_resolve_cli "$cli_flag")"
+  [ -z "$cli" ] && { echo "airev: no AI CLI found. Install one (claude/codex/gemini/copilot) or pass --cli." >&2; return 3; }
+  command -v "$cli" >/dev/null 2>&1 || { echo "airev: CLI '$cli' not on PATH." >&2; return 3; }
+
+  # diff range
+  local base range
+  base="${base_flag:-${BASE:-}}"
+  if [ -n "$base" ]; then range="$base...HEAD"
+  elif range_up="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"; then range="$range_up...HEAD"
+  else range="origin/main...HEAD"; fi
+
+  local diff; diff="$(git diff "$range" 2>/dev/null)"
+  [ -z "$diff" ] && { echo "airev: no changes vs $range — nothing to review."; return 0; }
+
+  echo "── airev review (cli=$cli, range=$range) ──"
+  local out
+  out="$(printf '%s' "$diff" | _run_cli "$cli" "$(_guidelines)" 2>/dev/null)" \
+    || { echo "airev: '$cli' failed (not logged in?). Skipping."; return 0; }
+  printf '%s\n' "$out"
+  echo "──────────────────────────────────────────"
+
+  if [ "$gate" -eq 1 ] && printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]'; then
+    echo "airev: P0/P1 findings — gate FAILED (use 'git push --no-verify' to override)." >&2
+    return 1
+  fi
+  return 0
+}
+
+cmd_init() {
+  local root; root="$(_root)" || { echo "airev: not a git repo." >&2; return 1; }
+  mkdir -p "$root/.airev" "$root/.git/hooks"
+  # rules file
+  [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
+  # config
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  # hook -> calls this same airev binary
+  cat > "$root/.git/hooks/pre-push" <<EOF
+#!/usr/bin/env bash
+exec "$AIREV_HOME/airev" review   # advisory; add --gate to block on P0/P1
+EOF
+  chmod +x "$root/.git/hooks/pre-push"
+  echo "airev: installed pre-push hook + .airev/guidelines.md + .airev.conf in $root"
+  echo "airev: default CLI = $(_resolve_cli) (edit .airev.conf to change)"
+}
+
+case "${1:-help}" in
+  review) shift; cmd_review "$@" ;;
+  init)   shift; cmd_init "$@" ;;
+  version|--version|-v) echo "airev $AIREV_VERSION" ;;
+  help|--help|-h|*)
+    cat <<EOF
+airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI CLI)
+
+  airev init                     install pre-push hook + config in this repo
+  airev review [opts]            review pending changes now
+      --cli <name>   claude | codex | gemini | copilot  (else \$AIREV_CLI, conf, autodetect)
+      --base <ref>   diff base (default: upstream, else origin/main)
+      --gate         exit non-zero on [P0]/[P1] findings (block push)
+  airev version
+
+Config: repo .airev.conf (CLI=, BASE=) and .airev/guidelines.md (review rules).
+EOF
+    ;;
+esac
