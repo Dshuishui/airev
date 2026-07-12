@@ -14,10 +14,20 @@ chmod +x "$BIN_DIR/airev"
 
 echo "airev: installed. version: $("$BIN_DIR/airev" version)"
 case ":$PATH:" in
-  *":$BIN_DIR:"*) echo "airev: ready — run 'airev init' inside a repo." ;;
+  *":$BIN_DIR:"*)
+    echo "airev: ready — run 'airev init' inside a repo."
+    ;;
   *)
-    echo "airev: $BIN_DIR is not on your PATH yet. Add it:"
-    echo "  export PATH=\"$BIN_DIR:\$PATH\"                     # this shell"
-    echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc  # persist (use ~/.bashrc for bash)"
+    # not on PATH yet — add it to the user's shell rc automatically
+    case "${SHELL##*/}" in
+      zsh)  RC="$HOME/.zshrc" ;;
+      bash) RC="$HOME/.bashrc" ;;
+      *)    RC="$HOME/.profile" ;;
+    esac
+    if ! grep -qsF "$BIN_DIR" "$RC" 2>/dev/null; then
+      printf '\n# added by airev installer\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+      echo "airev: added $BIN_DIR to PATH in $RC"
+    fi
+    echo "airev: open a new terminal (or run: source $RC), then 'airev init'."
     ;;
 esac
