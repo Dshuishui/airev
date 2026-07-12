@@ -29,9 +29,8 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 ## Quickstart
 
 ```bash
-# 1) put airev on your PATH (clone + symlink)
-git clone https://github.com/Dshuishui/airev.git ~/.airev-src
-ln -s ~/.airev-src/airev /usr/local/bin/airev
+# 1) install (single file, no sudo — drops into ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/install.sh | bash
 
 # 2) in a repo you want reviewed
 cd your-repo
@@ -39,6 +38,15 @@ airev init            # installs the pre-push hook + .airev/guidelines.md + .air
 
 # 3) just work — on `git push` it reviews your changes and prints findings
 ```
+
+Prefer not to pipe to bash? It's one file — download it and put it on your PATH:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/airev -o ~/.local/bin/airev
+chmod +x ~/.local/bin/airev
+```
+
+Requires one AI CLI already installed and logged in (`claude`, `codex`, `gemini`, or `copilot`).
 
 Review on demand (no push needed):
 
