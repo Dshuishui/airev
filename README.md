@@ -29,12 +29,10 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 ## Quickstart
 
 ```bash
-# 1) install (single file, no sudo — drops into ~/.local/bin)
+# 1) install (single file, no sudo). Lands in a dir already on your PATH when
+#    possible, so `airev` works right away. (If it prints an "open a new
+#    terminal" note, do that — it just added ~/.local/bin to your PATH.)
 curl -fsSL https://raw.githubusercontent.com/Dshuishui/airev/main/install.sh | bash
-
-# 1b) if `airev` isn't found, ~/.local/bin isn't on your PATH — add it:
-export PATH="$HOME/.local/bin:$PATH"                    # this shell
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc # persist (use ~/.bashrc for bash)
 
 # 2) in a repo you want reviewed
 cd your-repo
@@ -43,9 +41,9 @@ airev init            # installs the pre-push hook + .airev/guidelines.md + .air
 # 3) just work — on `git push` it reviews your changes *before* they go up
 ```
 
-On push, airev reviews the diff first. If it finds a `[P0]`/`[P1]`, it asks
-`Push anyway? [y/N]` — answer `N` to abort, fix, and push again; `y` to proceed.
-Clean diffs push straight through. Every review is saved locally:
+On push, airev reviews the diff first. If it finds anything (`[P0]`/`[P1]`/`[P2]`),
+it asks `Push anyway? [y/N]` — answer `N` to abort, fix, and push again; `y` to
+proceed. A clean diff (`LGTM`) pushes straight through. Every review is saved locally:
 
 ```bash
 airev last          # re-read the last review (kept in .git/, never committed)

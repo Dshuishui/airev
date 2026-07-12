@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.4.0"
+AIREV_VERSION="0.4.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -125,19 +125,21 @@ cmd_review() {
     echo "airev: saved → .git/airev/last-review.md  (view: airev last)"
   fi
 
-  local has_hi=0
+  local has_hi=0 has_any=0
   printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]' && has_hi=1
+  printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]|\[P2\]' && has_any=1
 
-  # gate (CI / non-interactive): fail hard on P0/P1
+  # gate (CI / non-interactive): fail hard on P0/P1 only (don't block PRs on P2 nits)
   if [ "$gate" -eq 1 ] && [ "$has_hi" -eq 1 ]; then
     echo "airev: P0/P1 findings — gate FAILED." >&2
     return 1
   fi
 
-  # confirm (local pre-push): on P0/P1, let YOU decide — fix first, or push anyway.
-  # Only prompts on a real terminal ([ -t 1 ]); CI / scripts fall through, no block.
-  if [ "$confirm" -eq 1 ] && [ "$has_hi" -eq 1 ] && [ -t 1 ] && [ -e /dev/tty ]; then
-    printf 'airev: P0/P1 found. Push anyway? [y/N] ' > /dev/tty
+  # confirm (local pre-push): on ANY finding (incl P2), let YOU decide — fix
+  # first, or push anyway. Only prompts on a real terminal; CI / scripts fall
+  # through without blocking.
+  if [ "$confirm" -eq 1 ] && [ "$has_any" -eq 1 ] && [ -t 1 ] && [ -e /dev/tty ]; then
+    printf 'airev: findings above. Push anyway? [y/N] ' > /dev/tty
     local ans=""; read -r ans < /dev/tty || ans=""
     case "$ans" in
       y|Y|yes|YES) return 0 ;;
