@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.1.0"
+AIREV_VERSION="0.2.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -86,14 +86,28 @@ cmd_review() {
   elif range_up="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"; then range="$range_up...HEAD"
   else range="origin/main...HEAD"; fi
 
-  local diff; diff="$(git diff "$range" 2>/dev/null)"
-  [ -z "$diff" ] && { echo "airev: no changes vs $range — nothing to review."; return 0; }
+  # cost guard 1: exclude noisy / generated paths (lock files, builds, binaries)
+  local ignore="${IGNORE:-*.lock package-lock.json yarn.lock pnpm-lock.yaml *.min.js *.min.css dist/* build/* out/* node_modules/* vendor/* *.svg *.png *.jpg *.jpeg *.gif *.pdf *.snap}"
+  local -a excl=(); local pat
+  for pat in $ignore; do excl+=( ":(exclude)$pat" ); done
 
-  echo "── airev review (cli=$cli, range=$range) ──"
+  local diff; diff="$(git diff "$range" -- . "${excl[@]}" 2>/dev/null)"
+  [ -z "$diff" ] && { echo "airev: no reviewable changes vs $range (after ignore rules)."; return 0; }
+
+  # cost guard 2: cap very large diffs so one push can't run away on tokens/time
+  local max_lines="${MAX_DIFF_LINES:-1500}" nlines truncated=0
+  nlines="$(printf '%s\n' "$diff" | wc -l | tr -d ' ')"
+  if [ "$nlines" -gt "$max_lines" ]; then
+    diff="$(printf '%s\n' "$diff" | head -n "$max_lines")"
+    truncated=1
+  fi
+
+  echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")) ──"
   local out
   out="$(printf '%s' "$diff" | _run_cli "$cli" "$(_guidelines)" 2>/dev/null)" \
     || { echo "airev: '$cli' failed (not logged in?). Skipping."; return 0; }
   printf '%s\n' "$out"
+  [ "$truncated" = 1 ] && echo "airev: note — diff was truncated to $max_lines lines (raise MAX_DIFF_LINES to review more)."
   echo "──────────────────────────────────────────"
 
   if [ "$gate" -eq 1 ] && printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]'; then
@@ -109,7 +123,7 @@ cmd_init() {
   # rules file
   [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
   # config
-  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
   # hook -> calls this same airev binary
   cat > "$root/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash

@@ -67,7 +67,7 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 ## Roadmap
 
 - [x] v0.1 — `init` + `review`, severity grading, `--gate`, specify CLI
-- [ ] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …), large-diff handling
+- [x] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …) + large-diff truncation (`MAX_DIFF_LINES`)
 - [ ] v0.3 — JSON/CI mode, `--fix` loop, npx/brew distribution
 
 ## License
