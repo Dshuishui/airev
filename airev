@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.5.1"
+AIREV_VERSION="0.6.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -101,7 +101,7 @@ _filter_ignored() {
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag=""
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -111,6 +111,7 @@ cmd_review() {
       --confirm)       confirm=1; shift ;;          # interactive: ask before push
       --confirm-level) clevel_flag="$2"; shift 2 ;; # p0 | p1 | any (when to prompt)
       --no-cache)      nocache=1; shift ;;
+      --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
@@ -130,6 +131,12 @@ cmd_review() {
   elif range_up="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"; then range="$range_up...HEAD"
   else range="origin/main...HEAD"; fi
   diffspec="$range"
+  # --worktree: review the base vs the working tree (committed + uncommitted), so
+  # `airev fix` can see the edits it just applied. `git diff <ref>` (no ...) does this.
+  if [ "$wt" -eq 1 ]; then
+    diffspec="${diffspec%...HEAD}"; [ -n "$diffspec" ] || diffspec="HEAD"
+    range="$diffspec..worktree"
+  fi
 
   # cost guard 1: exclude noisy / generated paths (lock files, builds, binaries)
   local ignore="${IGNORE:-*.lock package-lock.json yarn.lock pnpm-lock.yaml *.min.js *.min.css dist/* build/* out/* node_modules/* vendor/* *.svg *.png *.jpg *.jpeg *.gif *.pdf *.snap}"
@@ -258,6 +265,62 @@ cmd_last() {
   if [ -n "$rf" ] && [ -f "$rf" ]; then cat "$rf"; else echo "airev: no saved review yet (run 'airev review')."; fi
 }
 
+# Hand the findings to an agentic CLI so it edits the working tree to resolve them.
+# Only claude / codex can apply edits; edits are left UNCOMMITTED for you to inspect.
+_apply_fix() {
+  local cli="$1" rf="$2"
+  local prompt="You are fixing code-review findings in this repository's working tree.
+Apply the smallest edits that resolve each finding below, then stop. Do NOT commit,
+do NOT push, do NOT touch anything unrelated. Findings:
+
+$(cat "$rf")"
+  case "$cli" in
+    claude) claude -p --permission-mode acceptEdits "$prompt" ;;
+    codex)  codex exec --full-auto "$prompt" ;;
+    *) echo "airev fix: '--fix' needs an agentic CLI (claude or codex); got '$cli'." >&2; return 2 ;;
+  esac
+}
+
+cmd_fix() {
+  local cli_flag="" base_flag="" max=3
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cli)   cli_flag="$2"; shift 2 ;;
+      --base)  base_flag="$2"; shift 2 ;;
+      --max)   max="$2"; shift 2 ;;
+      *) echo "airev fix: unknown arg '$1'" >&2; return 2 ;;
+    esac
+  done
+  _load_conf
+  local cli; cli="$(_resolve_cli "$cli_flag")"
+  case "$cli" in
+    claude|codex) : ;;
+    "") echo "airev: no AI CLI found. Install claude or codex, or pass --cli." >&2; return 3 ;;
+    *)  echo "airev fix: '--fix' needs an agentic CLI (claude or codex), not '$cli'." >&2; return 2 ;;
+  esac
+  command -v "$cli" >/dev/null 2>&1 || { echo "airev: CLI '$cli' not on PATH." >&2; return 3; }
+
+  local rf; rf="$(_review_file)"
+  local i=1
+  while [ "$i" -le "$max" ]; do
+    echo "── airev fix: pass $i/$max ──"
+    # review the base vs the working tree so each pass sees the prior fixes
+    cmd_review --cli "$cli" ${base_flag:+--base "$base_flag"} --worktree --no-cache
+    [ -n "$rf" ] && [ -f "$rf" ] || { echo "airev fix: no review to act on."; return 1; }
+    if ! grep -qE '\[P0\]|\[P1\]' "$rf"; then
+      echo "airev fix: no P0/P1 findings left ✔  (review the uncommitted edits, then commit)"
+      return 0
+    fi
+    if [ "$i" -eq "$max" ]; then
+      echo "airev fix: reached max passes ($max) — some findings remain. See 'airev last'."
+      return 1
+    fi
+    echo "airev fix: applying fixes with ${cli}…"
+    _apply_fix "$cli" "$rf" || { echo "airev fix: fixer failed (not logged in, or CLI can't edit)."; return 1; }
+    i=$((i + 1))
+  done
+}
+
 # Parse [P0]/[P1]/[P2] lines (stdin) into a JSON array of findings.
 _to_json() {
   local first=1 line sev rest
@@ -306,6 +369,7 @@ EOF
 
 case "${1:-help}" in
   review)  shift; cmd_review "$@" ;;
+  fix)     shift; cmd_fix "$@" ;;
   init)    shift; cmd_init "$@" ;;
   last)    shift; cmd_last "$@" ;;
   upgrade) shift; cmd_upgrade "$@" ;;
@@ -323,6 +387,10 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --gate         exit non-zero on [P0]/[P1] (block push / fail CI, no prompt)
       --json         emit findings as JSON (for CI / tooling)
       --no-cache     re-run even if the diff is unchanged since the last review
+  airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
+      --cli <name>   claude | codex   (agentic CLI that can edit files)
+      --base <ref>   diff base (default: upstream, else origin/main)
+      --max <n>      max review→fix passes (default 3). Edits are left uncommitted.
   airev last                     show the last saved review (.git/airev/last-review.md)
   airev upgrade                  update airev in place to the latest version
   airev version

@@ -70,6 +70,18 @@ airev review --base origin/main      # choose the diff base
 airev review --gate                  # exit non-zero on [P0]/[P1] (block push)
 ```
 
+## Review, fix, repeat
+
+`airev fix` runs the review, hands the findings to an agentic CLI (`claude` or
+`codex`) to edit the working tree, then re-reviews — looping until no `[P0]`/`[P1]`
+remain (or `--max` passes). Edits are left **uncommitted** for you to read before
+committing:
+
+```bash
+airev fix                 # review → fix → re-review, up to 3 passes
+airev fix --max 5         # allow more passes
+```
+
 ## Run in CI (GitHub Actions)
 
 Same tool, on every pull request. Copy
@@ -135,7 +147,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.5 — fewer false positives (wider diff context; reuse `AGENTS.md`/`CLAUDE.md` rules;
   inline `airev-ignore` to silence accepted findings), live-streamed findings, result caching,
   choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
-- [ ] v0.6 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
+- [x] v0.6 — `airev fix` (review → agentic fix → re-review loop)
+- [ ] v0.7 — npm / brew distribution, more CLIs verified (codex/gemini)
 
 ## License
 
