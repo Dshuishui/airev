@@ -43,6 +43,10 @@ airev init            # installs the pre-push hook + .airev/guidelines.md + .air
 # 3) just work — on `git push` it reviews your changes *before* they go up
 ```
 
+Also packaged for **npm** (`npm install -g airev`) and **Homebrew**
+(`brew install Dshuishui/tap/airev`) — see [PUBLISHING.md](PUBLISHING.md) for the
+release steps behind them.
+
 On push, airev reviews the diff first and **streams the findings live**. When they
 reach your threshold it asks `Push anyway? [y/N]` — answer `N` to abort, fix, and
 push again; `y` to proceed. You decide *when* it stops to ask via `CONFIRM_LEVEL`
@@ -148,7 +152,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   inline `airev-ignore` to silence accepted findings), live-streamed findings, result caching,
   choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
 - [x] v0.6 — `airev fix` (review → agentic fix → re-review loop)
-- [ ] v0.7 — npm / brew distribution, more CLIs verified (codex/gemini)
+- [ ] v0.7 — npm / brew distribution (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`;
+  publish pending), more CLIs verified (codex/gemini)
 
 ## License
 

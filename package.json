@@ -1,0 +1,44 @@
+{
+  "name": "airev",
+  "version": "0.6.0",
+  "description": "AI code review before you push — using the AI CLI you already have logged in.",
+  "bin": {
+    "airev": "airev"
+  },
+  "files": [
+    "airev",
+    "install.sh",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bash -n airev"
+  },
+  "keywords": [
+    "code-review",
+    "ai",
+    "git",
+    "pre-push",
+    "git-hook",
+    "claude",
+    "codex",
+    "gemini",
+    "copilot",
+    "cli"
+  ],
+  "homepage": "https://github.com/Dshuishui/airev#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dshuishui/airev.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dshuishui/airev/issues"
+  },
+  "license": "MIT",
+  "author": "Dshuishui",
+  "engines": {
+    "node": ">=14"
+  },
+  "preferGlobal": true
+}
