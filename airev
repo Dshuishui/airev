@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.5.0"
+AIREV_VERSION="0.5.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -49,8 +49,9 @@ start the line with a severity tag:
   [P1]  likely bug / missing error handling / risky edge case — should fix
   [P2]  style, naming, dead code, minor simplification — nice to have
 
-Be concise: one line per finding, include file:line. If the diff is clean,
-reply exactly: LGTM
+Skip anything on a source line that contains the marker `airev-ignore` — the
+author has reviewed and accepted it. Be concise: one line per finding, include
+file:line. If the diff is clean, reply exactly: LGTM
 EOF
 }
 
@@ -78,6 +79,25 @@ _hash() {
   if command -v shasum >/dev/null 2>&1; then shasum | cut -d' ' -f1
   elif command -v sha1sum >/dev/null 2>&1; then sha1sum | cut -d' ' -f1
   else cksum | cut -d' ' -f1; fi
+}
+
+# Drop findings the author has silenced with an inline `airev-ignore` marker.
+# Deterministic backstop to the prompt instruction: for each [P?] finding we pull
+# file:line out of the text and, if that source line carries the marker, drop it.
+# A stream filter — keeps output live. Non-finding lines (LGTM, notes) pass through.
+_filter_ignored() {
+  local root; root="$(_root)"
+  local line path ln src
+  while IFS= read -r line; do
+    if [[ "$line" == *'[P'* ]] && [[ "$line" =~ ([A-Za-z0-9_./-]+):([0-9]+) ]]; then
+      path="${BASH_REMATCH[1]}"; ln="${BASH_REMATCH[2]}"
+      if [ -n "$root" ] && [ -f "$root/$path" ]; then
+        src="$(sed -n "${ln}p" "$root/$path" 2>/dev/null)"
+        case "$src" in *airev-ignore*) continue ;; esac
+      fi
+    fi
+    printf '%s\n' "$line"
+  done
 }
 
 cmd_review() {
@@ -161,12 +181,12 @@ cmd_review() {
   else
     [ "$json" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
     if [ "$json" -eq 1 ]; then
-      out="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null)" || { echo '[]'; return 0; }
+      out="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored)" || { echo '[]'; return 0; }
     else
-      # stream findings live as they arrive, while still capturing them for the
-      # save / parse / gate / confirm steps below.
+      # stream findings live as they arrive (minus airev-ignore'd ones), while
+      # still capturing them for the save / parse / gate / confirm steps below.
       local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null || echo "$cachedir/last.tmp")"
-      printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | tee "$tmp"
+      printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored | tee "$tmp"
       local rc="${PIPESTATUS[1]}"
       out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp"
       if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
@@ -309,6 +329,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
 
 Config: repo .airev.conf (CLI=, BASE=, CONFIRM_LEVEL=, CONTEXT_LINES=) and
         .airev/guidelines.md (review rules; falls back to AGENTS.md / CLAUDE.md).
+Silence a false positive: add an 'airev-ignore' marker on that source line.
 CI: run 'airev review --base origin/\$BASE --gate' in a PR job (see README).
 EOF
     ;;

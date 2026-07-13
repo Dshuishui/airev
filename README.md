@@ -9,6 +9,8 @@ so you catch the obvious stuff before a human reviewer does.
 
 Advisory by default (never blocks your push); opt into a gate when you want one.
 
+![airev reviewing a diff on git push](demo.gif)
+
 ```
 ── airev review (cli=claude, range=main...HEAD) ──
 [P0] auth.py:42  hardcoded API secret — remove and load from env; rotate the key
@@ -106,6 +108,18 @@ Per-repo, created by `airev init`:
 CLI resolution order: `--cli` flag → `$AIREV_CLI` → `.airev.conf` `CLI=` → autodetect.
 Repeated pushes of the same diff reuse the last review from cache (`--no-cache` to force).
 
+## Silence a false positive
+
+Reviewed a flag and decided it's fine? Drop an `airev-ignore` marker on that line —
+airev never reports it again (like `eslint-disable` / `# noqa`):
+
+```python
+password = os.getenv("PW", "")  # airev-ignore  — empty default is intentional here
+```
+
+The marker works with any CLI: it's both requested in the prompt and enforced
+locally, so a finding on an `airev-ignore` line is dropped even if the model misses it.
+
 ## How it works
 
 `airev` never talks to an LLM API itself. It computes the diff, injects your
@@ -118,8 +132,9 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …) + large-diff truncation (`MAX_DIFF_LINES`)
 - [x] v0.3 — CI mode (GitHub Actions workflow), `--json` output, `airev upgrade`
 - [x] v0.4 — review *before* the push completes: prompt to fix-or-proceed, saved result (`airev last`)
-- [x] v0.5 — fewer false positives (wider diff context; reuse `AGENTS.md`/`CLAUDE.md` rules),
-  live-streamed findings, result caching, choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
+- [x] v0.5 — fewer false positives (wider diff context; reuse `AGENTS.md`/`CLAUDE.md` rules;
+  inline `airev-ignore` to silence accepted findings), live-streamed findings, result caching,
+  choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
 - [ ] v0.6 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
 
 ## License
