@@ -11,7 +11,7 @@ class Airev < Formula
   homepage "https://github.com/Dshuishui/airev"
   url "https://github.com/Dshuishui/airev/archive/refs/tags/v0.6.0.tar.gz"
   version "0.6.0"
-  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
+  sha256 "8ef15f25d43223597346ca3b00226703b2a0858e05e6f484b6e3577b18b325ae"
   license "MIT"
 
   def install
