@@ -41,9 +41,11 @@ airev init            # installs the pre-push hook + .airev/guidelines.md + .air
 # 3) just work — on `git push` it reviews your changes *before* they go up
 ```
 
-On push, airev reviews the diff first. If it finds anything (`[P0]`/`[P1]`/`[P2]`),
-it asks `Push anyway? [y/N]` — answer `N` to abort, fix, and push again; `y` to
-proceed. A clean diff (`LGTM`) pushes straight through. Every review is saved locally:
+On push, airev reviews the diff first and **streams the findings live**. When they
+reach your threshold it asks `Push anyway? [y/N]` — answer `N` to abort, fix, and
+push again; `y` to proceed. You decide *when* it stops to ask via `CONFIRM_LEVEL`
+(`p0` / `p1` / `any` — default `any`, so even a `[P2]` nit prompts). A clean diff
+(`LGTM`) pushes straight through. Every review is saved locally:
 
 ```bash
 airev last          # re-read the last review (kept in .git/, never committed)
@@ -92,11 +94,17 @@ airev upgrade      # pulls the latest airev over your current install
 
 Per-repo, created by `airev init`:
 
-- **`.airev.conf`** — `CLI=claude`, optional `BASE=origin/main`.
+- **`.airev.conf`** — `CLI=claude`, plus optional `BASE=origin/main`,
+  `CONFIRM_LEVEL=p0|p1|any` (when the pre-push prompt trips), and
+  `CONTEXT_LINES=20` (how much code around each hunk the model sees — more
+  context means fewer false positives).
 - **`.airev/guidelines.md`** — the review rules (the prompt). Tune it to what your
-  project cares about; it's versioned with your code.
+  project cares about; it's versioned with your code. If it's absent, airev reuses
+  the house rules you already have — `AGENTS.md`, then `CLAUDE.md`, `.cursorrules`,
+  or `.github/copilot-instructions.md`.
 
 CLI resolution order: `--cli` flag → `$AIREV_CLI` → `.airev.conf` `CLI=` → autodetect.
+Repeated pushes of the same diff reuse the last review from cache (`--no-cache` to force).
 
 ## How it works
 
@@ -109,8 +117,10 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.1 — `init` + `review`, severity grading, `--gate`, specify CLI
 - [x] v0.2 — cost guards: ignore globs (`*.lock`, `dist/**`, …) + large-diff truncation (`MAX_DIFF_LINES`)
 - [x] v0.3 — CI mode (GitHub Actions workflow), `--json` output, `airev upgrade`
-- [x] v0.4 — review *before* the push completes: prompt to fix-or-proceed on P0/P1, saved result (`airev last`)
-- [ ] v0.5 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
+- [x] v0.4 — review *before* the push completes: prompt to fix-or-proceed, saved result (`airev last`)
+- [x] v0.5 — fewer false positives (wider diff context; reuse `AGENTS.md`/`CLAUDE.md` rules),
+  live-streamed findings, result caching, choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
+- [ ] v0.6 — `--fix` loop, more CLIs verified (codex/gemini), npm/brew distribution
 
 ## License
 

@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.4.1"
+AIREV_VERSION="0.5.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -56,66 +56,135 @@ EOF
 
 _guidelines() {
   local root; root="$(_root)"
+  # explicit airev rules win — the user owns the whole prompt
   if [ -n "$root" ] && [ -f "$root/.airev/guidelines.md" ]; then
-    cat "$root/.airev/guidelines.md"
-  else
-    _default_guidelines
+    cat "$root/.airev/guidelines.md"; return
   fi
+  # no airev-specific rules: keep the severity/format preamble, then fold in the
+  # house rules the repo already has (first hit) so output stays [P0/P1/P2].
+  _default_guidelines
+  local f
+  for f in AGENTS.md CLAUDE.md .cursorrules .github/copilot-instructions.md; do
+    if [ -n "$root" ] && [ -f "$root/$f" ]; then
+      printf '\n\nProject-specific rules (from %s) — apply where relevant:\n\n' "$f"
+      cat "$root/$f"
+      return
+    fi
+  done
+}
+
+# sha of stdin (portable): used to skip re-reviewing an unchanged diff.
+_hash() {
+  if command -v shasum >/dev/null 2>&1; then shasum | cut -d' ' -f1
+  elif command -v sha1sum >/dev/null 2>&1; then sha1sum | cut -d' ' -f1
+  else cksum | cut -d' ' -f1; fi
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cli)     cli_flag="$2"; shift 2 ;;
-      --base)    base_flag="$2"; shift 2 ;;
-      --gate)    gate=1; shift ;;
-      --json)    json=1; shift ;;
-      --confirm) confirm=1; shift ;;   # interactive: ask before push on P0/P1
+      --cli)           cli_flag="$2"; shift 2 ;;
+      --base)          base_flag="$2"; shift 2 ;;
+      --gate)          gate=1; shift ;;
+      --json)          json=1; shift ;;
+      --confirm)       confirm=1; shift ;;          # interactive: ask before push
+      --confirm-level) clevel_flag="$2"; shift 2 ;; # p0 | p1 | any (when to prompt)
+      --no-cache)      nocache=1; shift ;;
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
   _load_conf
+  # when --confirm prompts: p0 (only P0) | p1 (P0/P1) | any (incl P2). Default any.
+  local clevel="${clevel_flag:-${AIREV_CONFIRM_LEVEL:-${CONFIRM_LEVEL:-any}}}"
 
   local cli; cli="$(_resolve_cli "$cli_flag")"
   [ -z "$cli" ] && { echo "airev: no AI CLI found. Install one (claude/codex/gemini/copilot) or pass --cli." >&2; return 3; }
   command -v "$cli" >/dev/null 2>&1 || { echo "airev: CLI '$cli' not on PATH." >&2; return 3; }
 
-  # diff range
-  local base range
+  # diff range (what will be pushed). `diffspec` is the real git arg; `range` is
+  # the human label (becomes "working tree" on the on-demand fallback below).
+  local base range diffspec
   base="${base_flag:-${BASE:-}}"
   if [ -n "$base" ]; then range="$base...HEAD"
   elif range_up="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"; then range="$range_up...HEAD"
   else range="origin/main...HEAD"; fi
+  diffspec="$range"
 
   # cost guard 1: exclude noisy / generated paths (lock files, builds, binaries)
   local ignore="${IGNORE:-*.lock package-lock.json yarn.lock pnpm-lock.yaml *.min.js *.min.css dist/* build/* out/* node_modules/* vendor/* *.svg *.png *.jpg *.jpeg *.gif *.pdf *.snap}"
   local -a excl=(); local pat
   for pat in $ignore; do excl+=( ":(exclude)$pat" ); done
 
-  local diff; diff="$(git diff "$range" -- . "${excl[@]}" 2>/dev/null)"
+  # wider context than git's default -U3 so the model sees the imports / guards /
+  # types around each hunk — kills "no guard" style false positives.
+  local ctx="${CONTEXT_LINES:-20}"
+  local diff; diff="$(git diff -U"$ctx" "$diffspec" -- . "${excl[@]}" 2>/dev/null)"
+  # On-demand review with nothing committed yet? fall back to the working tree so
+  # `airev review` still shows something. Pre-push (--confirm) and CI (--gate/
+  # --json) stay commit-only — they review exactly what is being pushed.
+  if [ -z "$diff" ] && [ "$confirm" -eq 0 ] && [ "$gate" -eq 0 ] && [ "$json" -eq 0 ]; then
+    diff="$(git diff -U"$ctx" HEAD -- . "${excl[@]}" 2>/dev/null)"
+    [ -n "$diff" ] && { diffspec="HEAD"; range="working tree"; }
+  fi
   [ -z "$diff" ] && { echo "airev: no reviewable changes vs $range (after ignore rules)."; return 0; }
 
+  local files_all; files_all="$(printf '%s\n' "$diff" | sed -n 's#^diff --git a/\(.*\) b/.*#\1#p')"
+  local nfiles; nfiles="$(printf '%s\n' "$files_all" | grep -c .)"
+
   # cost guard 2: cap very large diffs so one push can't run away on tokens/time
-  local max_lines="${MAX_DIFF_LINES:-1500}" nlines truncated=0
+  local max_lines="${MAX_DIFF_LINES:-1500}" nlines truncated=0 dropped=""
   nlines="$(printf '%s\n' "$diff" | wc -l | tr -d ' ')"
   if [ "$nlines" -gt "$max_lines" ]; then
     diff="$(printf '%s\n' "$diff" | head -n "$max_lines")"
     truncated=1
+    local kept; kept="$(printf '%s\n' "$diff" | sed -n 's#^diff --git a/\(.*\) b/.*#\1#p' | grep -c .)"
+    dropped="$(printf '%s\n' "$files_all" | tail -n +"$((kept+1))" | paste -sd' ' -)"
   fi
 
   [ "$json" -eq 0 ] && echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")) ──"
-  local out
-  out="$(printf '%s' "$diff" | _run_cli "$cli" "$(_guidelines)" 2>/dev/null)" \
-    || { [ "$json" -eq 1 ] && echo '[]' || echo "airev: '$cli' failed (not logged in?). Skipping."; return 0; }
+
+  local guide; guide="$(_guidelines)"
+
+  # cache: skip the CLI entirely when this exact diff+rules+cli was just reviewed.
+  local cachedir; cachedir="$(_review_dir)"
+  local key=""
+  [ -n "$cachedir" ] && key="$(printf '%s' "$cli|$guide|$diff" | _hash)"
+
+  local out cached=0
+  if [ "$json" -eq 0 ] && [ "$nocache" -eq 0 ] && [ -n "$key" ] \
+     && [ -f "$cachedir/last.sha" ] && [ "$(cat "$cachedir/last.sha" 2>/dev/null)" = "$key" ] \
+     && [ -f "$cachedir/last.out" ]; then
+    out="$(cat "$cachedir/last.out")"; cached=1
+    echo "airev: unchanged since last review — cached result (--no-cache to re-run):"
+    printf '%s\n' "$out"
+  else
+    [ "$json" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
+    if [ "$json" -eq 1 ]; then
+      out="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null)" || { echo '[]'; return 0; }
+    else
+      # stream findings live as they arrive, while still capturing them for the
+      # save / parse / gate / confirm steps below.
+      local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null || echo "$cachedir/last.tmp")"
+      printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | tee "$tmp"
+      local rc="${PIPESTATUS[1]}"
+      out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp"
+      if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+        echo "airev: '$cli' failed (not logged in?). Skipping."; return 0
+      fi
+    fi
+    [ "$json" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
+  fi
 
   if [ "$json" -eq 1 ]; then
     printf '%s\n' "$out" | _to_json; echo
     return 0   # CI mode: consumed via PR comment / tooling; nothing saved locally
   fi
 
-  printf '%s\n' "$out"
-  [ "$truncated" = 1 ] && echo "airev: note — diff was truncated to $max_lines lines (raise MAX_DIFF_LINES to review more)."
+  [ "$truncated" = 1 ] && {
+    echo "airev: note — diff truncated to $max_lines lines (raise MAX_DIFF_LINES to review more)."
+    [ -n "$dropped" ] && echo "airev: not reviewed (truncated): $dropped"
+  }
   echo "──────────────────────────────────────────"
 
   # save the result locally (in .git/, never committed) for later viewing
@@ -125,7 +194,8 @@ cmd_review() {
     echo "airev: saved → .git/airev/last-review.md  (view: airev last)"
   fi
 
-  local has_hi=0 has_any=0
+  local has_p0=0 has_hi=0 has_any=0
+  printf '%s' "$out" | grep -qE '\[P0\]' && has_p0=1
   printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]' && has_hi=1
   printf '%s' "$out" | grep -qE '\[P0\]|\[P1\]|\[P2\]' && has_any=1
 
@@ -135,10 +205,17 @@ cmd_review() {
     return 1
   fi
 
-  # confirm (local pre-push): on ANY finding (incl P2), let YOU decide — fix
-  # first, or push anyway. Only prompts on a real terminal; CI / scripts fall
-  # through without blocking.
-  if [ "$confirm" -eq 1 ] && [ "$has_any" -eq 1 ] && [ -t 1 ] && [ -e /dev/tty ]; then
+  # confirm (local pre-push): let YOU decide — fix first, or push anyway. WHEN it
+  # prompts is your call via CONFIRM_LEVEL / --confirm-level: p0 | p1 | any
+  # (default any = even a P2 nit stops to ask). Only prompts on a real terminal;
+  # CI / scripts fall through without blocking.
+  local trip=0
+  case "$clevel" in
+    p0)    [ "$has_p0" -eq 1 ] && trip=1 ;;
+    p1)    [ "$has_hi" -eq 1 ] && trip=1 ;;
+    any|*) [ "$has_any" -eq 1 ] && trip=1 ;;
+  esac
+  if [ "$confirm" -eq 1 ] && [ "$trip" -eq 1 ] && [ -t 1 ] && [ -e /dev/tty ]; then
     printf 'airev: findings above. Push anyway? [y/N] ' > /dev/tty
     local ans=""; read -r ans < /dev/tty || ans=""
     case "$ans" in
@@ -150,10 +227,11 @@ cmd_review() {
 }
 
 # Where the last local review is stored: inside .git/ (never committed, per-clone).
-_review_file() {
+_review_dir() {
   local gd; gd="$(git rev-parse --git-dir 2>/dev/null)" || return 0
-  mkdir -p "$gd/airev" 2>/dev/null && echo "$gd/airev/last-review.md"
+  [ -n "$gd" ] && mkdir -p "$gd/airev" 2>/dev/null && echo "$gd/airev"
 }
+_review_file() { local d; d="$(_review_dir)" && [ -n "$d" ] && echo "$d/last-review.md"; }
 
 cmd_last() {
   local rf; rf="$(_review_file)"
@@ -193,7 +271,7 @@ cmd_init() {
   # rules file
   [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
   # config
-  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
   # hook -> calls this same airev binary
   cat > "$root/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
@@ -220,14 +298,17 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
   airev review [opts]            review pending changes now
       --cli <name>   claude | codex | gemini | copilot  (else \$AIREV_CLI, conf, autodetect)
       --base <ref>   diff base (default: upstream, else origin/main)
-      --confirm      on [P0]/[P1], ask before proceeding (used by the pre-push hook)
+      --confirm      ask before proceeding when findings trip CONFIRM_LEVEL (pre-push hook)
+      --confirm-level <p0|p1|any>   when --confirm prompts (default any; also CONFIRM_LEVEL=)
       --gate         exit non-zero on [P0]/[P1] (block push / fail CI, no prompt)
       --json         emit findings as JSON (for CI / tooling)
+      --no-cache     re-run even if the diff is unchanged since the last review
   airev last                     show the last saved review (.git/airev/last-review.md)
   airev upgrade                  update airev in place to the latest version
   airev version
 
-Config: repo .airev.conf (CLI=, BASE=) and .airev/guidelines.md (review rules).
+Config: repo .airev.conf (CLI=, BASE=, CONFIRM_LEVEL=, CONTEXT_LINES=) and
+        .airev/guidelines.md (review rules; falls back to AGENTS.md / CLAUDE.md).
 CI: run 'airev review --base origin/\$BASE --gate' in a PR job (see README).
 EOF
     ;;
