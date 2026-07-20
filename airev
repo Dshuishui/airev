@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.6.0"
+AIREV_VERSION="0.6.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -41,17 +41,37 @@ _run_cli() {
 
 _default_guidelines() {
   cat <<'EOF'
-You are a senior engineer reviewing a git diff before it is pushed. Report only
-real, actionable problems — no praise, no restating the code. For EACH finding,
-start the line with a severity tag:
+You are a senior engineer reviewing a git diff before it is pushed. Your job is to
+find real defects — not to praise, summarize, or restate the code.
 
-  [P0]  correctness bug, data loss, security hole — must fix before push
-  [P1]  likely bug / missing error handling / risky edge case — should fix
+Method — reason, don't guess:
+For each change, work out what the code is supposed to do, then actively try to
+break it: construct a concrete input or state that makes it crash or return a wrong
+result. Report a finding ONLY when you can name that trigger — prefer
+"with an empty list, line 42 raises IndexError" over "this looks risky". If you
+cannot construct a failing case, do not report it. This keeps signal high.
+
+What to look for, most important first:
+  - correctness & edge cases: empty / null / zero / negative / very large inputs,
+    boundaries, off-by-one, wrong operator, concurrency, branches with no coverage
+  - intent: does the change actually do what it claims (function name, commit, context)?
+  - failure handling: unhandled errors, leaked resources, inconsistent state on partial failure
+  - security: injection, secrets in code, missing authorization, unsafe deserialization
+  - contract: breaking change to a signature / API / output that other code depends on
+  - tests: are the new paths covered, and do the assertions check the RIGHT thing?
+  - performance: N+1 queries, unbounded growth, needless work in a hot path
+  - maintainability: dead code, confusing names, duplication (lower priority)
+
+Severity — begin EVERY finding line with one tag, then file:line:
+  [P0]  correctness bug, data loss, or security hole — must fix before push
+  [P1]  likely bug, missing error handling, or a risky edge case — should fix
   [P2]  style, naming, dead code, minor simplification — nice to have
 
-Skip anything on a source line that contains the marker `airev-ignore` — the
-author has reviewed and accepted it. Be concise: one line per finding, include
-file:line. If the diff is clean, reply exactly: LGTM
+Rules:
+  - one finding per line, e.g.:  [P1] path/to/file.py:17  <what breaks, then the fix>
+  - skip anything on a source line containing the marker `airev-ignore` (author accepted it)
+  - no praise, no summary, no restating unchanged code
+  - if the diff has no real problems, reply with exactly: LGTM
 EOF
 }
 

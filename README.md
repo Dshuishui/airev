@@ -116,7 +116,9 @@ Per-repo, created by `airev init`:
   `CONFIRM_LEVEL=p0|p1|any` (when the pre-push prompt trips), and
   `CONTEXT_LINES=20` (how much code around each hunk the model sees — more
   context means fewer false positives).
-- **`.airev/guidelines.md`** — the review rules (the prompt). Tune it to what your
+- **`.airev/guidelines.md`** — the review rules (the prompt). The built-in default
+  reviews *adversarially* — it only reports a finding when it can name a concrete
+  input/state that breaks the code, which keeps signal high. Tune it to what your
   project cares about; it's versioned with your code. If it's absent, airev reuses
   the house rules you already have — `AGENTS.md`, then `CLAUDE.md`, `.cursorrules`,
   or `.github/copilot-instructions.md`.
