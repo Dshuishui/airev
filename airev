@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.6.1"
+AIREV_VERSION="0.7.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -120,8 +120,32 @@ _filter_ignored() {
   done
 }
 
+# Second-pass instruction for --deep: hand the model the first-pass findings and
+# make it keep only what it can back with a concrete trigger, add what was missed,
+# and merge duplicates. Output contract is identical to a normal review.
+_deep_verify_guide() {
+  local pass1="$1"; [ -n "$pass1" ] || pass1="(none)"
+  cat <<EOF
+You are doing a rigorous SECOND-PASS code review. The git diff is on stdin. A first
+pass produced these findings:
+
+--- first pass ---
+$pass1
+--- end first pass ---
+
+Produce the FINAL review of the diff:
+  - KEEP a finding only if you can name a concrete input or state that triggers it
+    (e.g. "with an empty list, line 42 raises IndexError"). Drop vague/unprovable ones.
+  - ADD any correctness or security bug the first pass missed, proven the same way.
+  - Merge duplicates; keep the highest applicable severity.
+
+Output (unchanged): one finding per line starting with [P0], [P1] or [P2] and file:line;
+ignore any source line containing airev-ignore; if nothing real remains, reply: LGTM
+EOF
+}
+
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -131,6 +155,7 @@ cmd_review() {
       --confirm)       confirm=1; shift ;;          # interactive: ask before push
       --confirm-level) clevel_flag="$2"; shift 2 ;; # p0 | p1 | any (when to prompt)
       --no-cache)      nocache=1; shift ;;
+      --deep)          deep=1; shift ;;             # two-pass: review, then verify each finding
       --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
@@ -164,8 +189,10 @@ cmd_review() {
   for pat in $ignore; do excl+=( ":(exclude)$pat" ); done
 
   # wider context than git's default -U3 so the model sees the imports / guards /
-  # types around each hunk — kills "no guard" style false positives.
+  # types around each hunk — kills "no guard" style false positives. --deep widens
+  # it further (whole functions in view) unless CONTEXT_LINES is set explicitly.
   local ctx="${CONTEXT_LINES:-20}"
+  [ "$deep" -eq 1 ] && [ -z "${CONTEXT_LINES:-}" ] && ctx=60
   local diff; diff="$(git diff -U"$ctx" "$diffspec" -- . "${excl[@]}" 2>/dev/null)"
   # On-demand review with nothing committed yet? fall back to the working tree so
   # `airev review` still shows something. Pre-push (--confirm) and CI (--gate/
@@ -193,6 +220,17 @@ cmd_review() {
 
   local guide; guide="$(_guidelines)"
 
+  # --deep: two passes. Pass 1 finds; then rebuild the instruction so the main
+  # (streamed) pass re-examines the diff — keeping only findings backed by a
+  # concrete failing input, adding missed bugs, merging duplicates. Never cached.
+  if [ "$deep" -eq 1 ]; then
+    nocache=1
+    [ "$json" -eq 0 ] && printf 'airev: deep review — pass 1/2 (finding)…\n' >&2
+    local pass1; pass1="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored)"
+    guide="$(_deep_verify_guide "$pass1")"
+    [ "$json" -eq 0 ] && printf 'airev: deep review — pass 2/2 (verifying)…\n' >&2
+  fi
+
   # cache: skip the CLI entirely when this exact diff+rules+cli was just reviewed.
   local cachedir; cachedir="$(_review_dir)"
   local key=""
@@ -206,7 +244,7 @@ cmd_review() {
     echo "airev: unchanged since last review — cached result (--no-cache to re-run):"
     printf '%s\n' "$out"
   else
-    [ "$json" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
+    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
     if [ "$json" -eq 1 ]; then
       out="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored)" || { echo '[]'; return 0; }
     else
@@ -220,7 +258,7 @@ cmd_review() {
         echo "airev: '$cli' failed (not logged in?). Skipping."; return 0
       fi
     fi
-    [ "$json" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
+    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
   fi
 
   if [ "$json" -eq 1 ]; then
@@ -407,6 +445,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --gate         exit non-zero on [P0]/[P1] (block push / fail CI, no prompt)
       --json         emit findings as JSON (for CI / tooling)
       --no-cache     re-run even if the diff is unchanged since the last review
+      --deep         two-pass: review, then verify each finding (slower, higher signal)
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)

@@ -72,7 +72,14 @@ Review on demand (no push needed):
 airev review --cli claude            # review pending changes now
 airev review --base origin/main      # choose the diff base
 airev review --gate                  # exit non-zero on [P0]/[P1] (block push)
+airev review --deep                  # two-pass: review, then verify each finding
 ```
+
+`--deep` runs a second pass that re-examines the diff against the first pass —
+keeping only findings it can back with a concrete failing input, adding any it
+missed, and merging duplicates (wider context, ~2× the calls). Use it when a
+change is subtle and you want the extra rigor; the fast single pass stays the
+default for the pre-push gate.
 
 ## Review, fix, repeat
 
@@ -154,8 +161,10 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   inline `airev-ignore` to silence accepted findings), live-streamed findings, result caching,
   choose-your-own `CONFIRM_LEVEL`, on-demand review of uncommitted work
 - [x] v0.6 — `airev fix` (review → agentic fix → re-review loop)
-- [ ] v0.7 — npm / brew distribution (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`;
-  publish pending), more CLIs verified (codex/gemini)
+- [x] v0.6.1 — adversarial default review prompt (report only what a concrete input can break)
+- [x] v0.7 — `airev review --deep` (two-pass: review, then verify each finding)
+- [ ] v0.8 — `--with-tests` (run the suite, feed failures into review), npm / brew publish
+  (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`), more CLIs verified
 
 ## License
 
