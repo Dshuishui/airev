@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.7.0"
+AIREV_VERSION="0.8.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -120,6 +120,19 @@ _filter_ignored() {
   done
 }
 
+# Best-effort guess at how to run this project's tests (used by --with-tests when
+# TEST_CMD is not set). Returns a command on stdout, or nothing if unsure.
+_detect_test_cmd() {
+  local root; root="$(_root)"; [ -n "$root" ] || return 0
+  if [ -f "$root/package.json" ] && grep -q '"test"[[:space:]]*:' "$root/package.json"; then echo "npm test --silent"; return; fi
+  if [ -f "$root/Makefile" ] && grep -qE '^test:' "$root/Makefile"; then echo "make test"; return; fi
+  if [ -f "$root/go.mod" ]; then echo "go test ./..."; return; fi
+  if [ -f "$root/Cargo.toml" ]; then echo "cargo test"; return; fi
+  if [ -f "$root/pyproject.toml" ] || [ -f "$root/pytest.ini" ] || [ -f "$root/tox.ini" ] || [ -d "$root/tests" ]; then
+    command -v pytest >/dev/null 2>&1 && { echo "pytest -q"; return; }
+  fi
+}
+
 # Second-pass instruction for --deep: hand the model the first-pass findings and
 # make it keep only what it can back with a concrete trigger, add what was missed,
 # and merge duplicates. Output contract is identical to a normal review.
@@ -145,7 +158,7 @@ EOF
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -156,6 +169,7 @@ cmd_review() {
       --confirm-level) clevel_flag="$2"; shift 2 ;; # p0 | p1 | any (when to prompt)
       --no-cache)      nocache=1; shift ;;
       --deep)          deep=1; shift ;;             # two-pass: review, then verify each finding
+      --with-tests)    withtests=1; shift ;;        # run the suite, feed results into the review
       --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
@@ -216,7 +230,30 @@ cmd_review() {
     dropped="$(printf '%s\n' "$files_all" | tail -n +"$((kept+1))" | paste -sd' ' -)"
   fi
 
-  [ "$json" -eq 0 ] && echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")) ──"
+  # --with-tests: actually run the suite and append its result to the payload, so
+  # the review can tie real failures to the changed lines (execution, not guessing).
+  # Appended AFTER truncation so the test output is never cut. TEST_CMD > autodetect.
+  if [ "$withtests" -eq 1 ]; then
+    local root; root="$(_root)"
+    local test_cmd="${TEST_CMD:-$(_detect_test_cmd)}"
+    if [ -z "$test_cmd" ]; then
+      [ "$json" -eq 0 ] && echo "airev: --with-tests: no test command found — set TEST_CMD in .airev.conf. Reviewing without tests." >&2
+    else
+      [ "$json" -eq 0 ] && printf 'airev: running tests: %s …\n' "$test_cmd" >&2
+      local test_out test_rc=0
+      test_out="$(cd "$root" 2>/dev/null && eval "$test_cmd" 2>&1)"; test_rc=$?
+      test_out="$(printf '%s\n' "$test_out" | tail -n 200)"   # cap noise
+      if [ "$test_rc" -eq 0 ]; then
+        [ "$json" -eq 0 ] && echo "airev: tests passed." >&2
+        diff="$diff"$'\n\n=== TEST RESULTS ('"$test_cmd"$') ===\nThe suite PASSES (exit 0). Treat green as evidence the covered paths hold; still flag cases the tests do not exercise.'
+      else
+        [ "$json" -eq 0 ] && echo "airev: tests FAILED (exit $test_rc) — feeding failures into the review." >&2
+        diff="$diff"$'\n\n=== TEST RESULTS ('"$test_cmd"$', exit '"$test_rc"$') — FAILING ===\n'"$test_out"$'\n\nTie each failure above to the changed lines in the diff and report it as a finding.'
+      fi
+    fi
+  fi
+
+  [ "$json" -eq 0 ] && echo "── airev review (cli=$cli, range=$range, ${nlines} diff lines$([ "$truncated" = 1 ] && echo ", truncated to $max_lines")$([ "$withtests" = 1 ] && echo ", +tests")) ──"
 
   local guide; guide="$(_guidelines)"
 
@@ -412,7 +449,7 @@ cmd_init() {
   # rules file
   [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
   # config
-  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# TEST_CMD="npm test"        # used by: airev review --with-tests (else autodetected)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
   # hook -> calls this same airev binary
   cat > "$root/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
@@ -446,6 +483,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --json         emit findings as JSON (for CI / tooling)
       --no-cache     re-run even if the diff is unchanged since the last review
       --deep         two-pass: review, then verify each finding (slower, higher signal)
+      --with-tests   run the suite (TEST_CMD or autodetect) and feed results into the review
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)

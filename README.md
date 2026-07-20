@@ -81,6 +81,16 @@ missed, and merging duplicates (wider context, ~2× the calls). Use it when a
 change is subtle and you want the extra rigor; the fast single pass stays the
 default for the pre-push gate.
 
+```bash
+airev review --with-tests            # run the suite, feed the results into the review
+```
+
+`--with-tests` actually *runs* your tests and hands the result to the review, so a
+real failure gets tied to the changed lines that caused it (execution, not just
+static reasoning). The command comes from `TEST_CMD` in `.airev.conf`, or is
+autodetected (`npm test`, `make test`, `go test ./...`, `cargo test`, `pytest`).
+Combine with `--deep` for the most thorough pass.
+
 ## Review, fix, repeat
 
 `airev fix` runs the review, hands the findings to an agentic CLI (`claude` or
@@ -163,8 +173,9 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.6 — `airev fix` (review → agentic fix → re-review loop)
 - [x] v0.6.1 — adversarial default review prompt (report only what a concrete input can break)
 - [x] v0.7 — `airev review --deep` (two-pass: review, then verify each finding)
-- [ ] v0.8 — `--with-tests` (run the suite, feed failures into review), npm / brew publish
-  (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`), more CLIs verified
+- [x] v0.8 — `airev review --with-tests` (run the suite, feed real failures into the review)
+- [ ] v0.9 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
+  more CLIs verified (codex/gemini)
 
 ## License
 
