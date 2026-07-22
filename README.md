@@ -101,7 +101,13 @@ committing:
 ```bash
 airev fix                 # review → fix → re-review, up to 3 passes
 airev fix --max 5         # allow more passes
+airev fix --with-tests    # run the suite each pass — fix until tests pass AND no P0/P1
+airev fix --deep          # verified (two-pass) review each round
 ```
+
+With `--with-tests`, each pass runs your suite and feeds failures into the review,
+so the loop keeps fixing until the tests actually go green (not just until the model
+stops complaining). `--with-tests` and `--deep` compose.
 
 ## Run in CI (GitHub Actions)
 
@@ -174,6 +180,7 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.6.1 — adversarial default review prompt (report only what a concrete input can break)
 - [x] v0.7 — `airev review --deep` (two-pass: review, then verify each finding)
 - [x] v0.8 — `airev review --with-tests` (run the suite, feed real failures into the review)
+- [x] v0.8.1 — `airev fix --with-tests` / `--deep` (fix until the suite is green and no P0/P1)
 - [ ] v0.9 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 

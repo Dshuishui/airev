@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.8.0"
+AIREV_VERSION="0.8.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -378,11 +378,14 @@ $(cat "$rf")"
 
 cmd_fix() {
   local cli_flag="" base_flag="" max=3
+  local -a passthru=()   # flags forwarded to each review pass (--deep / --with-tests)
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cli)   cli_flag="$2"; shift 2 ;;
-      --base)  base_flag="$2"; shift 2 ;;
-      --max)   max="$2"; shift 2 ;;
+      --cli)         cli_flag="$2"; shift 2 ;;
+      --base)        base_flag="$2"; shift 2 ;;
+      --max)         max="$2"; shift 2 ;;
+      --deep)        passthru+=(--deep); shift ;;         # each pass does a two-pass review
+      --with-tests)  passthru+=(--with-tests); shift ;;   # each pass runs the suite too
       *) echo "airev fix: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
@@ -399,8 +402,9 @@ cmd_fix() {
   local i=1
   while [ "$i" -le "$max" ]; do
     echo "── airev fix: pass $i/$max ──"
-    # review the base vs the working tree so each pass sees the prior fixes
-    cmd_review --cli "$cli" ${base_flag:+--base "$base_flag"} --worktree --no-cache
+    # review the base vs the working tree so each pass sees the prior fixes.
+    # ${passthru[@]+...} guard keeps this safe under `set -u` with an empty array (bash 3.2).
+    cmd_review --cli "$cli" ${base_flag:+--base "$base_flag"} --worktree --no-cache ${passthru[@]+"${passthru[@]}"}
     [ -n "$rf" ] && [ -f "$rf" ] || { echo "airev fix: no review to act on."; return 1; }
     if ! grep -qE '\[P0\]|\[P1\]' "$rf"; then
       echo "airev fix: no P0/P1 findings left ✔  (review the uncommitted edits, then commit)"
@@ -488,6 +492,8 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)
       --max <n>      max review→fix passes (default 3). Edits are left uncommitted.
+      --with-tests   run the suite each pass — fix until tests pass AND no P0/P1
+      --deep         two-pass (verified) review each pass
   airev last                     show the last saved review (.git/airev/last-review.md)
   airev upgrade                  update airev in place to the latest version
   airev version
