@@ -109,6 +109,12 @@ With `--with-tests`, each pass runs your suite and feeds failures into the revie
 so the loop keeps fixing until the tests actually go green (not just until the model
 stops complaining). `--with-tests` and `--deep` compose.
 
+> **Note:** `airev fix` drives the agentic CLI with `claude -p --permission-mode
+> acceptEdits` (or `codex exec --full-auto`) so it can edit files without a prompt
+> per change. If a future CLI version renames those flags, `airev fix` will report
+> "fixer failed" — adjust the two commands in `_apply_fix`. `airev review` (no edits)
+> is unaffected. Edits are always left **uncommitted** for you to inspect.
+
 ## Run in CI (GitHub Actions)
 
 Same tool, on every pull request. Copy
