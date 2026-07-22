@@ -91,6 +91,29 @@ static reasoning). The command comes from `TEST_CMD` in `.airev.conf`, or is
 autodetected (`npm test`, `make test`, `go test ./...`, `cargo test`, `pytest`).
 Combine with `--deep` for the most thorough pass.
 
+## Cross-model review (several CLIs)
+
+The model that helped write a change shares its own blind spots — so let a *different*
+model review it. Configure more than one reviewer and airev runs each, labelling who
+found what; `--gate` / `--json` / `--confirm` all act on the **union**:
+
+```bash
+airev review --cli claude,codex          # review with both, once
+```
+```ini
+# .airev.conf — make it the default for this repo
+REVIEWERS="claude codex"
+```
+```
+── claude ──
+[P1] db.py:17  query built from user input — parameterize it
+── codex ──
+[P0] db.py:17  raw string concat into SQL — injection (codex caught the severity)
+```
+
+It's opt-in (N reviewers ≈ N× the calls), so the fast single reviewer stays the
+default for the pre-push gate; reach for a panel on the changes that matter.
+
 ## Review, fix, repeat
 
 `airev fix` runs the review, hands the findings to an agentic CLI (`claude` or
@@ -187,6 +210,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.7 — `airev review --deep` (two-pass: review, then verify each finding)
 - [x] v0.8 — `airev review --with-tests` (run the suite, feed real failures into the review)
 - [x] v0.8.1 — `airev fix --with-tests` / `--deep` (fix until the suite is green and no P0/P1)
+- [x] v0.9 — cross-model review: configure several CLIs (`REVIEWERS=`, `--cli claude,codex`),
+  labelled per reviewer, gate on the union
 - [ ] v0.9 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 

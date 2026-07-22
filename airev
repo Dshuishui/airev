@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.8.1"
+AIREV_VERSION="0.9.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -25,6 +25,19 @@ _resolve_cli() {
     command -v "$c" >/dev/null 2>&1 && { echo "$c"; return; }
   done
   echo ""
+}
+
+# Reviewer resolution — like _resolve_cli, but yields a space-separated LIST so you
+# can review with several CLIs at once (cross-model review). Accepts comma- or
+# space-separated values. Order: --cli > $AIREV_CLI > conf REVIEWERS= > conf CLI= > autodetect.
+_resolve_reviewers() {
+  local pick="${1:-}" raw=""
+  if   [ -n "$pick" ];                then raw="$pick"
+  elif [ -n "${AIREV_CLI:-}" ];       then raw="$AIREV_CLI"
+  elif [ -n "${REVIEWERS:-}" ];       then raw="$REVIEWERS"
+  elif [ -n "${CLI:-}" ];             then raw="$CLI"
+  else raw="$(_resolve_cli)"; fi
+  printf '%s' "$raw" | tr ',' ' '
 }
 
 # Run the chosen CLI: instruction as arg, diff arrives on stdin.
@@ -120,6 +133,24 @@ _filter_ignored() {
   done
 }
 
+# Run EACH reviewer over the diff and emit a combined, airev-ignore-filtered result.
+# With >1 reviewer, each block is labelled "── <cli> ──" so you can see who found
+# what; a reviewer that produces nothing (e.g. not logged in) is skipped silently.
+# Args: <guide> <cli>...   Diff arrives on stdin. (Captures per reviewer — no live
+# streaming; the single-reviewer path streams instead.)
+_run_reviewers() {
+  local guide="$1"; shift
+  local diff; diff="$(cat)"
+  local c o multi=0
+  [ "$#" -gt 1 ] && multi=1
+  for c in "$@"; do
+    o="$(printf '%s' "$diff" | _run_cli "$c" "$guide" 2>/dev/null | _filter_ignored)"
+    [ -z "$o" ] && continue
+    [ "$multi" -eq 1 ] && printf '── %s ──\n' "$c"
+    printf '%s\n' "$o"
+  done
+}
+
 # Best-effort guess at how to run this project's tests (used by --with-tests when
 # TEST_CMD is not set). Returns a command on stdout, or nothing if unsure.
 _detect_test_cmd() {
@@ -178,9 +209,17 @@ cmd_review() {
   # when --confirm prompts: p0 (only P0) | p1 (P0/P1) | any (incl P2). Default any.
   local clevel="${clevel_flag:-${AIREV_CONFIRM_LEVEL:-${CONFIRM_LEVEL:-any}}}"
 
-  local cli; cli="$(_resolve_cli "$cli_flag")"
-  [ -z "$cli" ] && { echo "airev: no AI CLI found. Install one (claude/codex/gemini/copilot) or pass --cli." >&2; return 3; }
-  command -v "$cli" >/dev/null 2>&1 || { echo "airev: CLI '$cli' not on PATH." >&2; return 3; }
+  # one or more reviewers (cross-model review). Drop any that aren't installed.
+  local -a reviewers=(); read -r -a reviewers <<< "$(_resolve_reviewers "$cli_flag")"
+  [ "${#reviewers[@]}" -eq 0 ] && { echo "airev: no AI CLI found. Install one (claude/codex/gemini/copilot) or pass --cli." >&2; return 3; }
+  local -a valid=(); local c
+  for c in "${reviewers[@]}"; do
+    if command -v "$c" >/dev/null 2>&1; then valid+=("$c")
+    else echo "airev: reviewer '$c' not on PATH — skipping." >&2; fi
+  done
+  reviewers=(${valid[@]+"${valid[@]}"})
+  [ "${#reviewers[@]}" -eq 0 ] && { echo "airev: none of the configured reviewers are on PATH." >&2; return 3; }
+  local cli; cli="$(IFS='+'; printf '%s' "${reviewers[*]}")"   # display label, e.g. claude+codex
 
   # diff range (what will be pushed). `diffspec` is the real git arg; `range` is
   # the human label (becomes "working tree" on the on-demand fallback below).
@@ -263,7 +302,7 @@ cmd_review() {
   if [ "$deep" -eq 1 ]; then
     nocache=1
     [ "$json" -eq 0 ] && printf 'airev: deep review — pass 1/2 (finding)…\n' >&2
-    local pass1; pass1="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored)"
+    local pass1; pass1="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
     guide="$(_deep_verify_guide "$pass1")"
     [ "$json" -eq 0 ] && printf 'airev: deep review — pass 2/2 (verifying)…\n' >&2
   fi
@@ -283,17 +322,20 @@ cmd_review() {
   else
     [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
     if [ "$json" -eq 1 ]; then
-      out="$(printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored)" || { echo '[]'; return 0; }
-    else
-      # stream findings live as they arrive (minus airev-ignore'd ones), while
+      out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
+      [ -z "$out" ] && { echo '[]'; return 0; }
+    elif [ "${#reviewers[@]}" -eq 1 ]; then
+      # single reviewer: stream findings live (minus airev-ignore'd ones), while
       # still capturing them for the save / parse / gate / confirm steps below.
       local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null || echo "$cachedir/last.tmp")"
-      printf '%s' "$diff" | _run_cli "$cli" "$guide" 2>/dev/null | _filter_ignored | tee "$tmp"
-      local rc="${PIPESTATUS[1]}"
+      printf '%s' "$diff" | _run_cli "${reviewers[0]}" "$guide" 2>/dev/null | _filter_ignored | tee "$tmp"
       out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp"
-      if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
-        echo "airev: '$cli' failed (not logged in?). Skipping."; return 0
-      fi
+      [ -z "$out" ] && { echo "airev: '$cli' produced nothing (not logged in?). Skipping."; return 0; }
+    else
+      # multiple reviewers: run each, print its labelled block, capture the union.
+      out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
+      [ -z "$out" ] && { echo "airev: no reviewer produced output (not logged in?). Skipping."; return 0; }
+      printf '%s\n' "$out"
     fi
     [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
   fi
@@ -453,7 +495,7 @@ cmd_init() {
   # rules file
   [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
   # config
-  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# TEST_CMD="npm test"        # used by: airev review --with-tests (else autodetected)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# REVIEWERS="claude codex"   # review with several CLIs at once (cross-model review)\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# TEST_CMD="npm test"        # used by: airev review --with-tests (else autodetected)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
   # hook -> calls this same airev binary
   cat > "$root/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
@@ -479,7 +521,8 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
 
   airev init                     install pre-push hook + config in this repo
   airev review [opts]            review pending changes now
-      --cli <name>   claude | codex | gemini | copilot  (else \$AIREV_CLI, conf, autodetect)
+      --cli <name[,name…]>   claude | codex | gemini | copilot; list several to
+                             cross-review (else \$AIREV_CLI, conf REVIEWERS=/CLI=, autodetect)
       --base <ref>   diff base (default: upstream, else origin/main)
       --confirm      ask before proceeding when findings trip CONFIRM_LEVEL (pre-push hook)
       --confirm-level <p0|p1|any>   when --confirm prompts (default any; also CONFIRM_LEVEL=)
