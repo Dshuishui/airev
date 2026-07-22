@@ -114,6 +114,17 @@ REVIEWERS="claude codex"
 It's opt-in (N reviewers ≈ N× the calls), so the fast single reviewer stays the
 default for the pre-push gate; reach for a panel on the changes that matter.
 
+Add `--merge` to fold the panel into one de-duplicated list (an extra pass that
+collapses findings about the same issue and keeps the highest severity) — handy when
+reviewers overlap or you want a single clean list to post as one comment:
+
+```bash
+airev review --cli claude,codex --merge
+# ...prints each reviewer's block, then a "── merged ──" consolidated list
+```
+
+`--gate` / `--json` then act on the merged list rather than the raw union.
+
 ## Review, fix, repeat
 
 `airev fix` runs the review, hands the findings to an agentic CLI (`claude` or
@@ -211,7 +222,7 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.8 — `airev review --with-tests` (run the suite, feed real failures into the review)
 - [x] v0.8.1 — `airev fix --with-tests` / `--deep` (fix until the suite is green and no P0/P1)
 - [x] v0.9 — cross-model review: configure several CLIs (`REVIEWERS=`, `--cli claude,codex`),
-  labelled per reviewer, gate on the union
+  labelled per reviewer, gate on the union; `--merge` to consolidate into one list
 - [ ] v0.9 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 

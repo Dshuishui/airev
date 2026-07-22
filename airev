@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.9.0"
+AIREV_VERSION="0.9.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -151,6 +151,20 @@ _run_reviewers() {
   done
 }
 
+# Consolidate several reviewers' findings (on stdin, one labelled block each) into a
+# single de-duplicated list via one more model call. Output is the standard format.
+_merge_findings() {
+  local mcli="$1"
+  local prompt="Below are code-review findings on ONE git diff from several reviewers, each
+block labelled by reviewer. Consolidate them into a single de-duplicated list:
+  - merge findings about the same issue (same file:line or same root cause) into one line
+  - keep the HIGHEST severity among the duplicates
+  - do NOT invent new issues — only consolidate what is given, and drop nothing real
+Output one finding per line as [P0], [P1] or [P2] with file:line. If there are none,
+reply exactly: LGTM"
+  _run_cli "$mcli" "$prompt" | _filter_ignored
+}
+
 # Best-effort guess at how to run this project's tests (used by --with-tests when
 # TEST_CMD is not set). Returns a command on stdout, or nothing if unsure.
 _detect_test_cmd() {
@@ -189,7 +203,7 @@ EOF
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0 merge=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -201,6 +215,7 @@ cmd_review() {
       --no-cache)      nocache=1; shift ;;
       --deep)          deep=1; shift ;;             # two-pass: review, then verify each finding
       --with-tests)    withtests=1; shift ;;        # run the suite, feed results into the review
+      --merge)         merge=1; shift ;;            # with 2+ reviewers: dedupe into one list
       --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
@@ -220,6 +235,7 @@ cmd_review() {
   reviewers=(${valid[@]+"${valid[@]}"})
   [ "${#reviewers[@]}" -eq 0 ] && { echo "airev: none of the configured reviewers are on PATH." >&2; return 3; }
   local cli; cli="$(IFS='+'; printf '%s' "${reviewers[*]}")"   # display label, e.g. claude+codex
+  [ "$merge" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && { echo "airev: --merge needs 2+ reviewers — ignoring." >&2; merge=0; }
 
   # diff range (what will be pushed). `diffspec` is the real git arg; `range` is
   # the human label (becomes "working tree" on the on-demand fallback below).
@@ -310,7 +326,7 @@ cmd_review() {
   # cache: skip the CLI entirely when this exact diff+rules+cli was just reviewed.
   local cachedir; cachedir="$(_review_dir)"
   local key=""
-  [ -n "$cachedir" ] && key="$(printf '%s' "$cli|$guide|$diff" | _hash)"
+  [ -n "$cachedir" ] && key="$(printf '%s' "$cli|$guide|$diff|merge=$merge" | _hash)"
 
   local out cached=0
   if [ "$json" -eq 0 ] && [ "$nocache" -eq 0 ] && [ -n "$key" ] \
@@ -324,6 +340,10 @@ cmd_review() {
     if [ "$json" -eq 1 ]; then
       out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
       [ -z "$out" ] && { echo '[]'; return 0; }
+      # --merge: consolidate the union into one de-duplicated list (machine output)
+      if [ "$merge" -eq 1 ] && printf '%s' "$out" | grep -qE '\[P[012]\]'; then
+        local m; m="$(printf '%s' "$out" | _merge_findings "${reviewers[0]}")"; [ -n "$m" ] && out="$m"
+      fi
     elif [ "${#reviewers[@]}" -eq 1 ]; then
       # single reviewer: stream findings live (minus airev-ignore'd ones), while
       # still capturing them for the save / parse / gate / confirm steps below.
@@ -333,9 +353,16 @@ cmd_review() {
       [ -z "$out" ] && { echo "airev: '$cli' produced nothing (not logged in?). Skipping."; return 0; }
     else
       # multiple reviewers: run each, print its labelled block, capture the union.
-      out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
-      [ -z "$out" ] && { echo "airev: no reviewer produced output (not logged in?). Skipping."; return 0; }
-      printf '%s\n' "$out"
+      local union; union="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
+      [ -z "$union" ] && { echo "airev: no reviewer produced output (not logged in?). Skipping."; return 0; }
+      printf '%s\n' "$union"
+      out="$union"
+      # --merge: one more pass consolidates the union into a single de-duplicated list.
+      if [ "$merge" -eq 1 ] && printf '%s' "$union" | grep -qE '\[P[012]\]'; then
+        printf '\n── merged ──\n'
+        out="$(printf '%s' "$union" | _merge_findings "${reviewers[0]}")"; [ -n "$out" ] || out="$union"
+        printf '%s\n' "$out"
+      fi
     fi
     [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
   fi
@@ -531,6 +558,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --no-cache     re-run even if the diff is unchanged since the last review
       --deep         two-pass: review, then verify each finding (slower, higher signal)
       --with-tests   run the suite (TEST_CMD or autodetect) and feed results into the review
+      --merge        with 2+ reviewers: add a pass that dedupes them into one list
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)
