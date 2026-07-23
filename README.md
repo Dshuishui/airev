@@ -25,8 +25,27 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 - **Zero secrets** — reuses your logged-in AI CLI; nothing to configure, nothing to leak.
 - **Local** — your diff is reviewed on your machine, not uploaded to a service.
 - **Non-blocking** — advisory by default; `--gate` only if *you* want it to fail on P0/P1.
+- **Cross-model** — have `codex` review what `claude` wrote (any mix); results merge into one list.
+- **Beyond a static diff** — `--deep` verifies each finding, `--with-tests` runs your suite,
+  `airev fix` loops until it's clean.
 - **Yours to tune** — review rules live in a versioned `.airev/guidelines.md` per repo.
 - **Pick your CLI** — `--cli claude` (or codex/gemini/copilot); autodetects if unset.
+
+## What it does
+
+| Command | What it does |
+|---|---|
+| `airev init` | install the pre-push hook + `.airev/guidelines.md` + `.airev.conf` |
+| `airev review` | review pending changes, severity-graded `[P0]`/`[P1]`/`[P2]` |
+| `airev review --deep` | two-pass — review, then verify each finding actually holds |
+| `airev review --with-tests` | run the test suite; feed real failures into the review |
+| `airev review --cli a,b [--merge]` | cross-model review with several CLIs (optionally de-duped) |
+| `airev review --gate` · `--json` | block on `[P0]`/`[P1]` · machine-readable output (for CI) |
+| `airev fix` | let claude/codex fix the findings, re-review, loop until clean |
+| `airev last` · `airev upgrade` | re-read the last review · update airev in place |
+
+Flags compose — e.g. `airev fix --with-tests --deep`, or
+`airev review --cli claude,codex --merge --gate`.
 
 ## Quickstart
 
@@ -222,8 +241,9 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.8 — `airev review --with-tests` (run the suite, feed real failures into the review)
 - [x] v0.8.1 — `airev fix --with-tests` / `--deep` (fix until the suite is green and no P0/P1)
 - [x] v0.9 — cross-model review: configure several CLIs (`REVIEWERS=`, `--cli claude,codex`),
-  labelled per reviewer, gate on the union; `--merge` to consolidate into one list
-- [ ] v0.9 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
+  labelled per reviewer, gate on the union
+- [x] v0.9.1 — `--merge` to consolidate a multi-reviewer panel into one de-duplicated list
+- [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
 ## License
