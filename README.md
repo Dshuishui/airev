@@ -220,6 +220,22 @@ password = os.getenv("PW", "")  # airev-ignore  — empty default is intentional
 The marker works with any CLI: it's both requested in the prompt and enforced
 locally, so a finding on an `airev-ignore` line is dropped even if the model misses it.
 
+## Syncs & already-merged pushes
+
+A pre-push hook fires on *every* push — including when you're just syncing
+already-reviewed, already-merged commits down into your branch. airev handles that:
+
+- **Auto-skip.** On a pre-push, if every non-merge commit you're pushing is already
+  on the main branch (a sync, or a `git merge main` into your branch), there's
+  nothing new to review — airev skips it. It finds the main branch automatically
+  (`origin/main`, `upstream/main`, …); set `MAIN=` in `.airev.conf` to pin it, or
+  `AIREV_NO_AUTOSKIP=1` to turn the behavior off.
+- **Skip one push by hand.** `AIREV_SKIP=1 git push` (or the universal
+  `git push --no-verify`).
+
+CI (`--gate` / `--json`) and on-demand `airev review` never auto-skip — they always
+review what you point them at.
+
 ## How it works
 
 `airev` never talks to an LLM API itself. It computes the diff, injects your
@@ -243,6 +259,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.9 — cross-model review: configure several CLIs (`REVIEWERS=`, `--cli claude,codex`),
   labelled per reviewer, gate on the union
 - [x] v0.9.1 — `--merge` to consolidate a multi-reviewer panel into one de-duplicated list
+- [x] v0.10 — auto-skip sync / already-merged pushes (nothing new beyond `main`);
+  `AIREV_SKIP=1` to skip one push by hand
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 

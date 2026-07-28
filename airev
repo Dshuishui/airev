@@ -3,10 +3,20 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.9.1"
+AIREV_VERSION="0.10.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
+
+# The branch that changes get merged into (already reviewed there). MAIN= wins;
+# otherwise the first of these that exists. Used to auto-skip sync / already-merged pushes.
+_main_ref() {
+  if [ -n "${MAIN:-}" ]; then git rev-parse --verify -q "$MAIN" >/dev/null 2>&1 && echo "$MAIN"; return; fi
+  local r
+  for r in origin/main origin/master upstream/main upstream/master main master; do
+    git rev-parse --verify -q "$r" >/dev/null 2>&1 && { echo "$r"; return; }
+  done
+}
 
 # Load repo config (.airev.conf: shell key=value, e.g. CLI=claude BASE=origin/main)
 _load_conf() {
@@ -221,6 +231,8 @@ cmd_review() {
     esac
   done
   _load_conf
+  # manual escape hatch for a single push:  AIREV_SKIP=1 git push
+  [ -n "${AIREV_SKIP:-}" ] && { echo "airev: AIREV_SKIP set — skipping review."; return 0; }
   # when --confirm prompts: p0 (only P0) | p1 (P0/P1) | any (incl P2). Default any.
   local clevel="${clevel_flag:-${AIREV_CONFIRM_LEVEL:-${CONFIRM_LEVEL:-any}}}"
 
@@ -250,6 +262,22 @@ cmd_review() {
   if [ "$wt" -eq 1 ]; then
     diffspec="${diffspec%...HEAD}"; [ -n "$diffspec" ] || diffspec="HEAD"
     range="$diffspec..worktree"
+  fi
+
+  # auto-skip sync / already-merged pushes: on a pre-push (--confirm), if every
+  # non-merge commit being pushed is already on the main branch, it's been reviewed
+  # there — skip. CI (--gate/--json) and on-demand `airev review` are unaffected.
+  # Turn off with AIREV_NO_AUTOSKIP=1; choose the main branch with MAIN=.
+  if [ "$confirm" -eq 1 ] && [ -z "${AIREV_NO_AUTOSKIP:-}" ]; then
+    local mainref baseref
+    mainref="$(_main_ref)"
+    baseref="${diffspec%...HEAD}"
+    if [ -n "$mainref" ] && [ -n "$baseref" ] && [ "$baseref" != "$mainref" ] \
+       && git rev-parse --verify -q "$baseref" >/dev/null 2>&1 \
+       && [ -z "$(git rev-list "$baseref..HEAD" --no-merges --not "$mainref" 2>/dev/null)" ]; then
+      echo "airev: nothing new beyond $mainref (sync / already-merged push) — skipping review."
+      return 0
+    fi
   fi
 
   # cost guard 1: exclude noisy / generated paths (lock files, builds, binaries)
@@ -522,7 +550,7 @@ cmd_init() {
   # rules file
   [ -f "$root/.airev/guidelines.md" ] || _default_guidelines > "$root/.airev/guidelines.md"
   # config
-  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# REVIEWERS="claude codex"   # review with several CLIs at once (cross-model review)\n# BASE=origin/main\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# TEST_CMD="npm test"        # used by: airev review --with-tests (else autodetected)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
+  [ -f "$root/.airev.conf" ] || printf '# airev config\nCLI=%s\n# REVIEWERS="claude codex"   # review with several CLIs at once (cross-model review)\n# BASE=origin/main\n# MAIN=origin/main           # branch changes merge into; sync/already-merged pushes auto-skip\n# CONFIRM_LEVEL=any          # when pre-push prompts: p0 | p1 | any\n# CONTEXT_LINES=20           # diff context sent to the model (more = fewer false positives)\n# MAX_DIFF_LINES=1500        # cap huge diffs (cost guard)\n# TEST_CMD="npm test"        # used by: airev review --with-tests (else autodetected)\n# IGNORE="*.lock dist/* *.min.js"  # extra paths to skip\n' "$(_resolve_cli)" > "$root/.airev.conf"
   # hook -> calls this same airev binary
   cat > "$root/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
@@ -572,6 +600,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
 Config: repo .airev.conf (CLI=, BASE=, CONFIRM_LEVEL=, CONTEXT_LINES=) and
         .airev/guidelines.md (review rules; falls back to AGENTS.md / CLAUDE.md).
 Silence a false positive: add an 'airev-ignore' marker on that source line.
+Skip one push: AIREV_SKIP=1 git push. Sync/already-merged pushes auto-skip (MAIN=, AIREV_NO_AUTOSKIP=1 to disable).
 CI: run 'airev review --base origin/\$BASE --gate' in a PR job (see README).
 EOF
     ;;
