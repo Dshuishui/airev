@@ -3,18 +3,22 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.10.0"
+AIREV_VERSION="0.10.2"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
 
-# The branch that changes get merged into (already reviewed there). MAIN= wins;
-# otherwise the first of these that exists. Used to auto-skip sync / already-merged pushes.
-_main_ref() {
+# The branches changes get merged into (already reviewed there) — one per line. A
+# push whose commits are all already on one of these is a sync / already-merged push.
+# MAIN= overrides; otherwise every one of these that exists (so a fork's origin/main
+# AND the upstream/main it tracks both count). Used to auto-skip such pushes.
+_main_refs() {
   if [ -n "${MAIN:-}" ]; then git rev-parse --verify -q "$MAIN" >/dev/null 2>&1 && echo "$MAIN"; return; fi
+  # remote-tracking refs only — the local main/master IS what you'd be pushing, not
+  # an independent reviewed baseline (excluding it would erase your own commits).
   local r
-  for r in origin/main origin/master upstream/main upstream/master main master; do
-    git rev-parse --verify -q "$r" >/dev/null 2>&1 && { echo "$r"; return; }
+  for r in origin/main origin/master upstream/main upstream/master; do
+    git rev-parse --verify -q "$r" >/dev/null 2>&1 && echo "$r"
   done
 }
 
@@ -269,14 +273,18 @@ cmd_review() {
   # there — skip. CI (--gate/--json) and on-demand `airev review` are unaffected.
   # Turn off with AIREV_NO_AUTOSKIP=1; choose the main branch with MAIN=.
   if [ "$confirm" -eq 1 ] && [ -z "${AIREV_NO_AUTOSKIP:-}" ]; then
-    local mainref baseref
-    mainref="$(_main_ref)"
-    baseref="${diffspec%...HEAD}"
-    if [ -n "$mainref" ] && [ -n "$baseref" ] && [ "$baseref" != "$mainref" ] \
-       && git rev-parse --verify -q "$baseref" >/dev/null 2>&1 \
-       && [ -z "$(git rev-list "$baseref..HEAD" --no-merges --not "$mainref" 2>/dev/null)" ]; then
-      echo "airev: nothing new beyond $mainref (sync / already-merged push) — skipping review."
-      return 0
+    local baseref mr; baseref="${diffspec%...HEAD}"
+    local -a mainrefs=()
+    while IFS= read -r mr; do [ -n "$mr" ] && mainrefs+=("$mr"); done <<< "$(_main_refs)"
+    if [ -n "$baseref" ] && [ "${#mainrefs[@]}" -gt 0 ] \
+       && git rev-parse --verify -q "$baseref" >/dev/null 2>&1; then
+      # exclude each main ref with a ^ prefix (NOT --not, which is a mode toggle
+      # that cancels itself out when repeated). Any non-merge commit left = real work.
+      local -a notargs=(); for mr in "${mainrefs[@]}"; do notargs+=("^$mr"); done
+      if [ -z "$(git rev-list "$baseref..HEAD" --no-merges ${notargs[@]+"${notargs[@]}"} 2>/dev/null)" ]; then
+        echo "airev: nothing new beyond ${mainrefs[*]} (sync / already-merged push) — skipping review."
+        return 0
+      fi
     fi
   fi
 
