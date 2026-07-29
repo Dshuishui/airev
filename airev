@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.10.2"
+AIREV_VERSION="0.11.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -237,6 +237,11 @@ cmd_review() {
   _load_conf
   # manual escape hatch for a single push:  AIREV_SKIP=1 git push
   [ -n "${AIREV_SKIP:-}" ] && { echo "airev: AIREV_SKIP set — skipping review."; return 0; }
+  # repo off-switch: `airev off` disables the pre-push review until `airev on`.
+  if [ "$confirm" -eq 1 ]; then
+    local _dd; _dd="$(_review_dir)"
+    [ -n "$_dd" ] && [ -f "$_dd/disabled" ] && { echo "airev: review is OFF for this repo ('airev on' to re-enable) — skipping."; return 0; }
+  fi
   # when --confirm prompts: p0 (only P0) | p1 (P0/P1) | any (incl P2). Default any.
   local clevel="${clevel_flag:-${AIREV_CONFIRM_LEVEL:-${CONFIRM_LEVEL:-any}}}"
 
@@ -465,6 +470,30 @@ cmd_last() {
   if [ -n "$rf" ] && [ -f "$rf" ]; then cat "$rf"; else echo "airev: no saved review yet (run 'airev review')."; fi
 }
 
+# Repo-level off switch, stored in .git/ (per-clone, never committed). While off,
+# the pre-push hook skips review entirely — no guessing which branch is "main".
+cmd_off() {
+  local d; d="$(_review_dir)"
+  [ -n "$d" ] || { echo "airev: not a git repo." >&2; return 1; }
+  printf '%s\n' "${*:-disabled}" > "$d/disabled"
+  echo "airev: review is now OFF for this repo — pushes won't be reviewed."
+  echo "airev: re-enable with 'airev on'."
+}
+cmd_on() {
+  local d; d="$(_review_dir)"
+  [ -n "$d" ] && rm -f "$d/disabled"
+  echo "airev: review is back ON for this repo."
+}
+cmd_status() {
+  _load_conf
+  local d; d="$(_review_dir)"
+  if [ -n "$d" ] && [ -f "$d/disabled" ]; then
+    echo "airev: OFF for this repo ('airev on' to re-enable)."
+  else
+    echo "airev: ON. reviewers: $(_resolve_reviewers 2>/dev/null)"
+  fi
+}
+
 # Hand the findings to an agentic CLI so it edits the working tree to resolve them.
 # Only claude / codex can apply edits; edits are left UNCOMMITTED for you to inspect.
 _apply_fix() {
@@ -576,6 +605,9 @@ case "${1:-help}" in
   fix)     shift; cmd_fix "$@" ;;
   init)    shift; cmd_init "$@" ;;
   last)    shift; cmd_last "$@" ;;
+  off)     shift; cmd_off "$@" ;;
+  on)      shift; cmd_on "$@" ;;
+  status)  shift; cmd_status "$@" ;;
   upgrade) shift; cmd_upgrade "$@" ;;
   version|--version|-v) echo "airev $AIREV_VERSION" ;;
   help|--help|-h|*)
@@ -602,13 +634,16 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --with-tests   run the suite each pass — fix until tests pass AND no P0/P1
       --deep         two-pass (verified) review each pass
   airev last                     show the last saved review (.git/airev/last-review.md)
+  airev off / on                 disable / re-enable the pre-push review for this repo
+  airev status                   show whether review is on or off here
   airev upgrade                  update airev in place to the latest version
   airev version
 
 Config: repo .airev.conf (CLI=, BASE=, CONFIRM_LEVEL=, CONTEXT_LINES=) and
         .airev/guidelines.md (review rules; falls back to AGENTS.md / CLAUDE.md).
 Silence a false positive: add an 'airev-ignore' marker on that source line.
-Skip one push: AIREV_SKIP=1 git push. Sync/already-merged pushes auto-skip (MAIN=, AIREV_NO_AUTOSKIP=1 to disable).
+Skip one push: AIREV_SKIP=1 git push.  Turn off for this repo: airev off  (airev on to restore).
+Sync/already-merged pushes auto-skip (MAIN=, AIREV_NO_AUTOSKIP=1 to disable).
 CI: run 'airev review --base origin/\$BASE --gate' in a PR job (see README).
 EOF
     ;;

@@ -42,7 +42,8 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 | `airev review --cli a,b [--merge]` | cross-model review with several CLIs (optionally de-duped) |
 | `airev review --gate` · `--json` | block on `[P0]`/`[P1]` · machine-readable output (for CI) |
 | `airev fix` | let claude/codex fix the findings, re-review, loop until clean |
-| `airev last` · `airev upgrade` | re-read the last review · update airev in place |
+| `airev off` · `airev on` | turn the pre-push review off / back on for this repo |
+| `airev last` · `airev status` · `airev upgrade` | last review · on/off state · self-update |
 
 Flags compose — e.g. `airev fix --with-tests --deep`, or
 `airev review --cli claude,codex --merge --gate`.
@@ -232,6 +233,10 @@ already-reviewed, already-merged commits down into your branch. airev handles th
   remote mains it can see (`origin/main` *and* `upstream/main`), so a commit already
   reviewed upstream counts even when your fork's `origin/main` is still behind. Pin
   it with `MAIN=` in `.airev.conf`, or disable with `AIREV_NO_AUTOSKIP=1`.
+- **Turn it off for a while.** Doing a run of sync / maintenance pushes and don't
+  want to think about it? `airev off` disables the pre-push review for this repo
+  until `airev on` — no guessing which remote is your upstream. `airev status`
+  shows the current state.
 - **Skip one push by hand.** `AIREV_SKIP=1 git push` (or the universal
   `git push --no-verify`).
 
@@ -263,6 +268,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
 - [x] v0.9.1 — `--merge` to consolidate a multi-reviewer panel into one de-duplicated list
 - [x] v0.10 — auto-skip sync / already-merged pushes (nothing new beyond `main`);
   `AIREV_SKIP=1` to skip one push by hand
+- [x] v0.11 — `airev off` / `on` / `status`: an explicit per-repo review toggle
+  (reliable when auto-detection can't tell which remote is upstream)
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
