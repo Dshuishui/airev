@@ -201,8 +201,8 @@ airev pr 42 --cli claude,codex --chain           # cross-model / chained works h
 airev pr 42 --json          # or --merge / --gate
 ```
 
-It uses the `gh` CLI (your GitHub login) to pull the PR diff, title, description, and
-any **linked issue** (`Fixes #N`, or GitHub's "closing issues"). Then it checks:
+It pulls the PR diff, title, description, and any **linked issue** (`Fixes #N`, or
+GitHub's "closing issues"), then checks:
 
 - **Does it resolve the issue?** (when one is linked) — flags anything the issue
   asked for that the diff doesn't do.
@@ -210,9 +210,12 @@ any **linked issue** (`Fixes #N`, or GitHub's "closing issues"). Then it checks:
 - **Does it fit?** — architecture and conventions, or does it break/contradict other
   code, duplicate behavior, or leave callers/tests inconsistent.
 
-Needs `gh` installed and logged in (`gh auth login`). For the deepest architecture
-checks, run it inside a checkout of that repo so an agentic CLI can read surrounding
-code; a bare URL still reviews the diff + issue context.
+**Public repos need no login** — pass the full PR URL and airev fetches GitHub's
+public `.diff` with plain `curl` (linked-issue text too, if `jq` is installed).
+**Private repos** use the `gh` CLI (`gh auth login`); gh is also used automatically
+whenever you're already logged in. For the deepest architecture checks, run it
+inside a checkout of that repo so an agentic CLI can read surrounding code; a bare
+URL still reviews the diff + issue context.
 
 ## Run in CI (GitHub Actions)
 

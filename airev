@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.13.0"
+AIREV_VERSION="0.13.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -246,7 +246,6 @@ cmd_pr() {
     esac
   done
   [ -n "$target" ] || { echo "airev pr: give a PR number or URL." >&2; return 2; }
-  command -v gh >/dev/null 2>&1 || { echo "airev pr: needs the GitHub CLI 'gh' (https://cli.github.com), logged in." >&2; return 3; }
   _load_conf
 
   # parse number + (for a URL) owner/repo
@@ -254,28 +253,57 @@ cmd_pr() {
   case "$target" in
     http*|git@*|*/pull/*)
       num="$(printf '%s' "$target" | sed -E 's#.*/pull/([0-9]+).*#\1#')"
-      repo="$(printf '%s' "$target" | sed -E 's#.*github.com[/:]([^/]+/[^/]+)/pull/[0-9]+.*#\1#')"
-      [ -n "$repo" ] && rf=(--repo "$repo") ;;
+      repo="$(printf '%s' "$target" | sed -E 's#.*github.com[/:]([^/]+/[^/]+)/pull/[0-9]+.*#\1#')" ;;
     *) num="$target" ;;
   esac
   printf '%s' "$num" | grep -qE '^[0-9]+$' || { echo "airev pr: could not parse a PR number from '$target'." >&2; return 2; }
 
-  echo "airev: fetching PR #$num${repo:+ ($repo)} via gh…" >&2
-  local diff; diff="$(gh pr diff "$num" ${rf[@]+"${rf[@]}"} 2>/dev/null)"
-  [ -n "$diff" ] || { echo "airev pr: no diff (bad PR, no access, or gh not logged in)." >&2; return 3; }
+  # Source: prefer gh when it's installed AND logged in (works for private too).
+  # Otherwise fall back to plain curl on GitHub's PUBLIC .diff + API — no login
+  # needed for a public repo. For a bare number we need to know the repo: gh, else
+  # the origin remote.
+  local use_gh=0
+  command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && use_gh=1
+  [ "$use_gh" -eq 1 ] && [ -n "$repo" ] && rf=(--repo "$repo")
+  if [ -z "$repo" ] && [ "$use_gh" -eq 0 ]; then
+    repo="$(git config --get remote.origin.url 2>/dev/null | sed -E 's#(git@|https?://)[^/:]+[/:]([^/]+/[^/]+)#\2#; s#\.git$##')"
+  fi
 
-  local title body; title="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json title -q .title 2>/dev/null)"
-  body="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json body -q .body 2>/dev/null)"
-  # linked issues: prefer GitHub's closing refs; fall back to "fixes #N" in the body
-  local issuenums issuetext="" inum
-  issuenums="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json closingIssuesReferences -q '.closingIssuesReferences[].number' 2>/dev/null)"
-  [ -n "$issuenums" ] || issuenums="$(printf '%s' "$body" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' | grep -oE '[0-9]+')"
-  for inum in $issuenums; do
-    local it ib
-    it="$(gh issue view "$inum" ${rf[@]+"${rf[@]}"} --json title -q .title 2>/dev/null)"
-    ib="$(gh issue view "$inum" ${rf[@]+"${rf[@]}"} --json body -q .body 2>/dev/null)"
-    [ -n "$it" ] && issuetext="$issuetext"$'\n\n#'"$inum: $it"$'\n'"$ib"
-  done
+  local diff title="" body="" issuetext="" issuenums="" inum
+  if [ "$use_gh" -eq 1 ]; then
+    echo "airev: fetching PR #$num${repo:+ ($repo)} via gh…" >&2
+    diff="$(gh pr diff "$num" ${rf[@]+"${rf[@]}"} 2>/dev/null)"
+    title="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json title -q .title 2>/dev/null)"
+    body="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json body -q .body 2>/dev/null)"
+    issuenums="$(gh pr view "$num" ${rf[@]+"${rf[@]}"} --json closingIssuesReferences -q '.closingIssuesReferences[].number' 2>/dev/null)"
+    [ -n "$issuenums" ] || issuenums="$(printf '%s' "$body" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' | grep -oE '[0-9]+')"
+    for inum in $issuenums; do
+      local it ib
+      it="$(gh issue view "$inum" ${rf[@]+"${rf[@]}"} --json title -q .title 2>/dev/null)"
+      ib="$(gh issue view "$inum" ${rf[@]+"${rf[@]}"} --json body -q .body 2>/dev/null)"
+      [ -n "$it" ] && issuetext="$issuetext"$'\n\n#'"$inum: $it"$'\n'"$ib"
+    done
+  else
+    [ -n "$repo" ] || { echo "airev pr: no gh login and no repo — pass the full PR URL (public repos need no login), or 'gh auth login' for private." >&2; return 3; }
+    echo "airev: fetching public PR #$num ($repo) via curl (no login)…" >&2
+    diff="$(curl -fsSL "https://github.com/$repo/pull/$num.diff" 2>/dev/null)"
+    # metadata is best-effort here; needs jq to parse the public API JSON
+    if command -v jq >/dev/null 2>&1; then
+      local pj; pj="$(curl -fsSL "https://api.github.com/repos/$repo/pulls/$num" 2>/dev/null)"
+      title="$(printf '%s' "$pj" | jq -r '.title // empty' 2>/dev/null)"
+      body="$(printf '%s' "$pj" | jq -r '.body // empty' 2>/dev/null)"
+      issuenums="$(printf '%s' "$body" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' | grep -oE '[0-9]+')"
+      for inum in $issuenums; do
+        local ij
+        ij="$(curl -fsSL "https://api.github.com/repos/$repo/issues/$inum" 2>/dev/null)"
+        local it ib; it="$(printf '%s' "$ij" | jq -r '.title // empty' 2>/dev/null)"; ib="$(printf '%s' "$ij" | jq -r '.body // empty' 2>/dev/null)"
+        [ -n "$it" ] && issuetext="$issuetext"$'\n\n#'"$inum: $it"$'\n'"$ib"
+      done
+    else
+      [ "$json" -eq 0 ] && echo "airev: (no gh/jq — reviewing the diff without PR title/issue context)" >&2
+    fi
+  fi
+  [ -n "$diff" ] || { echo "airev pr: couldn't fetch the PR diff. Public repo → pass the full URL; private → install gh and 'gh auth login'." >&2; return 3; }
   [ "$json" -eq 0 ] && echo "airev: PR #$num — ${title:-untitled}${issuetext:+  (issue linked)}" >&2
 
   # cost guard: cap huge PR diffs
@@ -767,8 +795,9 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --with-tests   run the suite (TEST_CMD or autodetect) and feed results into the review
       --merge        with 2+ reviewers: add a pass that dedupes them into one list
       --chain        with 2+ reviewers: each verifies the prior's findings (order = --cli list)
-  airev pr <url|number> [opts]   review a GitHub PR (needs 'gh'): resolves the issue?
-                                 new bugs? fits the architecture?  [--cli --chain --merge --gate --json]
+  airev pr <url|number> [opts]   review a GitHub PR: resolves the issue? new bugs? fits
+                                 the architecture?  (public repo: no login; private: gh auth)
+                                 [--cli --chain --merge --gate --json]
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)
