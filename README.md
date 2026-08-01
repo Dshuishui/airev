@@ -42,6 +42,7 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 | `airev review --cli a,b [--merge]` | cross-model review with several CLIs (optionally de-duped) |
 | `airev review --cli a,b --chain` | pipeline: `a` reviews, then `b` verifies `a`'s findings |
 | `airev review --gate` · `--json` | block on `[P0]`/`[P1]` · machine-readable output (for CI) |
+| `airev pr <url\|n>` | review a GitHub PR: resolves its issue? new bugs? fits the architecture? |
 | `airev fix` | let claude/codex fix the findings, re-review, loop until clean |
 | `airev off` · `airev on` | turn the pre-push review off / back on for this repo |
 | `airev last` · `airev status` · `airev upgrade` | last review · on/off state · self-update |
@@ -188,6 +189,31 @@ stops complaining). `--with-tests` and `--deep` compose.
 > "fixer failed" — adjust the two commands in `_apply_fix`. `airev review` (no edits)
 > is unaffected. Edits are always left **uncommitted** for you to inspect.
 
+## Review a GitHub PR
+
+Point airev at a pull request (URL or number) and it reviews the whole thing as an
+expert reviewer — not just the diff, but *against its intent*:
+
+```bash
+airev pr https://github.com/acme/app/pull/42     # by URL (any repo)
+airev pr 42                                       # by number (inside that repo)
+airev pr 42 --cli claude,codex --chain           # cross-model / chained works here too
+airev pr 42 --json          # or --merge / --gate
+```
+
+It uses the `gh` CLI (your GitHub login) to pull the PR diff, title, description, and
+any **linked issue** (`Fixes #N`, or GitHub's "closing issues"). Then it checks:
+
+- **Does it resolve the issue?** (when one is linked) — flags anything the issue
+  asked for that the diff doesn't do.
+- **Does it introduce new bugs / regressions?** — with a concrete failing input.
+- **Does it fit?** — architecture and conventions, or does it break/contradict other
+  code, duplicate behavior, or leave callers/tests inconsistent.
+
+Needs `gh` installed and logged in (`gh auth login`). For the deepest architecture
+checks, run it inside a checkout of that repo so an agentic CLI can read surrounding
+code; a bare URL still reviews the diff + issue context.
+
 ## Run in CI (GitHub Actions)
 
 Same tool, on every pull request. Copy
@@ -291,6 +317,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   (reliable when auto-detection can't tell which remote is upstream)
 - [x] v0.12 — `--chain`: pipeline cross-review (one model verifies another's findings;
   order is the `--cli` order)
+- [x] v0.13 — `airev pr <url|number>`: review a GitHub PR (via `gh`) against its linked
+  issue, for new bugs, and for architectural fit
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
