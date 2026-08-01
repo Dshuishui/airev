@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.13.2"
+AIREV_VERSION="0.14.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -147,18 +147,48 @@ _filter_ignored() {
   done
 }
 
-# Run EACH reviewer over the diff and emit a combined, airev-ignore-filtered result.
-# With >1 reviewer, each block is labelled "── <cli> ──" so you can see who found
-# what; a reviewer that produces nothing (e.g. not logged in) is skipped silently.
-# Args: <guide> <cli>...   Diff arrives on stdin. (Captures per reviewer — no live
-# streaming; the single-reviewer path streams instead.)
+# Spinner + elapsed seconds on stderr while the given PIDs run. No-op when stderr is
+# not a terminal (CI / captured output). Always waits for the PIDs at the end.
+_spin() {
+  local label="$1"; shift
+  local p
+  if [ ! -t 2 ]; then for p in "$@"; do wait "$p" 2>/dev/null; done; return; fi
+  local spin='|/-\' i=0 start=$SECONDS alive ch
+  while :; do
+    alive=0; for p in "$@"; do kill -0 "$p" 2>/dev/null && { alive=1; break; }; done
+    [ "$alive" -eq 0 ] && break
+    ch="${spin:$((i % 4)):1}"; i=$((i + 1))
+    printf '\r\033[K%s %s  %ss' "$ch" "$label" "$((SECONDS - start))" >&2
+    sleep 0.1
+  done
+  printf '\r\033[K' >&2
+  for p in "$@"; do wait "$p" 2>/dev/null; done
+}
+
+# Run EACH reviewer over the diff IN PARALLEL and emit a combined, airev-ignore-
+# filtered result. Wall time = the slowest reviewer, not the sum. With >1 reviewer
+# each block is labelled "── <cli> ──" (fixed order); a reviewer that produces
+# nothing (e.g. not logged in) is skipped. Args: <guide> <cli>...  Diff on stdin.
 _run_reviewers() {
   local guide="$1"; shift
   local diff; diff="$(cat)"
-  local c o multi=0
-  [ "$#" -gt 1 ] && multi=1
+  local multi=0; [ "$#" -gt 1 ] && multi=1
+  local -a tmps=() names=() pids=()
+  local c tf o
   for c in "$@"; do
-    o="$(printf '%s' "$diff" | _run_cli "$c" "$guide" 2>/dev/null | _filter_ignored)"
+    tf="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null)"
+    if [ -z "$tf" ]; then   # no mktemp — fall back to running this one synchronously
+      o="$(printf '%s' "$diff" | _run_cli "$c" "$guide" 2>/dev/null | _filter_ignored)"
+      [ -n "$o" ] && { [ "$multi" -eq 1 ] && printf '── %s ──\n' "$c"; printf '%s\n' "$o"; }
+      continue
+    fi
+    ( printf '%s' "$diff" | _run_cli "$c" "$guide" 2>/dev/null | _filter_ignored > "$tf" ) &
+    tmps+=("$tf"); names+=("$c"); pids+=("$!")
+  done
+  [ "${#pids[@]}" -gt 0 ] && _spin "reviewing via $*" ${pids[@]+"${pids[@]}"}
+  local i=0
+  for c in ${names[@]+"${names[@]}"}; do
+    o="$(cat "${tmps[$i]}" 2>/dev/null)"; rm -f "${tmps[$i]}"; i=$((i + 1))
     [ -z "$o" ] && continue
     [ "$multi" -eq 1 ] && printf '── %s ──\n' "$c"
     printf '%s\n' "$o"

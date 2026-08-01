@@ -133,8 +133,10 @@ REVIEWERS="claude codex"
 [P0] db.py:17  raw string concat into SQL — injection (codex caught the severity)
 ```
 
-It's opt-in (N reviewers ≈ N× the calls), so the fast single reviewer stays the
-default for the pre-push gate; reach for a panel on the changes that matter.
+Reviewers run **in parallel**, so a panel costs N× the tokens but only ≈1× the wait.
+While it works, airev shows a spinner with elapsed seconds (on a terminal; silent in
+CI). It's opt-in, so the single reviewer stays the default for the pre-push gate;
+reach for a panel on the changes that matter.
 
 Add `--merge` to fold the panel into one de-duplicated list (an extra pass that
 collapses findings about the same issue and keeps the highest severity) — handy when
@@ -320,8 +322,10 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   (reliable when auto-detection can't tell which remote is upstream)
 - [x] v0.12 — `--chain`: pipeline cross-review (one model verifies another's findings;
   order is the `--cli` order)
-- [x] v0.13 — `airev pr <url|number>`: review a GitHub PR (via `gh`) against its linked
-  issue, for new bugs, and for architectural fit
+- [x] v0.13 — `airev pr <url|number>`: review a GitHub PR (via `gh`, or curl for public
+  repos) against its linked issue, for new bugs, and for architectural fit
+- [x] v0.14 — parallel reviewers (panel wall-time ≈ 1×, not N×) + a progress spinner
+  with elapsed time while you wait
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
