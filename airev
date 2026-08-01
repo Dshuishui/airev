@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.13.1"
+AIREV_VERSION="0.13.2"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -303,7 +303,21 @@ cmd_pr() {
       [ "$json" -eq 0 ] && echo "airev: (no gh/jq — reviewing the diff without PR title/issue context)" >&2
     fi
   fi
-  [ -n "$diff" ] || { echo "airev pr: couldn't fetch the PR diff. Public repo → pass the full URL; private → install gh and 'gh auth login'." >&2; return 3; }
+  if [ -z "$diff" ]; then
+    if [ "$use_gh" -eq 1 ]; then
+      echo "airev pr: gh couldn't fetch PR #$num — wrong number, or your account has no access to this repo?" >&2
+    else
+      # public fetch failed: likely private, but could be a wrong/deleted URL. Tell,
+      # don't guess or auto-login (this may run in a script/CI).
+      echo "airev pr: couldn't read PR #$num${repo:+ in $repo} as a public PR — it may be a private repo, or the URL/number may be wrong." >&2
+      if command -v gh >/dev/null 2>&1; then
+        echo "airev: if it's private, log in once with 'gh auth login', then re-run — airev will use gh automatically." >&2
+      else
+        echo "airev: if it's private, install the GitHub CLI (https://cli.github.com) and run 'gh auth login', then re-run." >&2
+      fi
+    fi
+    return 3
+  fi
   [ "$json" -eq 0 ] && echo "airev: PR #$num — ${title:-untitled}${issuetext:+  (issue linked)}" >&2
 
   # cost guard: cap huge PR diffs
