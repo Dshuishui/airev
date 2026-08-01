@@ -40,6 +40,7 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 | `airev review --deep` | two-pass — review, then verify each finding actually holds |
 | `airev review --with-tests` | run the test suite; feed real failures into the review |
 | `airev review --cli a,b [--merge]` | cross-model review with several CLIs (optionally de-duped) |
+| `airev review --cli a,b --chain` | pipeline: `a` reviews, then `b` verifies `a`'s findings |
 | `airev review --gate` · `--json` | block on `[P0]`/`[P1]` · machine-readable output (for CI) |
 | `airev fix` | let claude/codex fix the findings, re-review, loop until clean |
 | `airev off` · `airev on` | turn the pre-push review off / back on for this repo |
@@ -144,6 +145,24 @@ airev review --cli claude,codex --merge
 ```
 
 `--gate` / `--json` then act on the merged list rather than the raw union.
+
+### Chained review (one model checks another's review)
+
+`--merge` treats the reviewers as equals. `--chain` makes them a pipeline: the
+**first** reviewer reviews the diff, then the **next** reviewer reviews *its
+findings* — verifying what holds, dropping false positives, adding what was missed.
+Because a *different* model does the checking (not the one that wrote the findings,
+nor the one that may have written the code), it catches blind spots a same-model
+`--deep` pass can't.
+
+```bash
+airev review --cli claude,codex --chain   # claude finds → codex verifies claude
+airev review --cli codex,claude --chain   # codex finds → claude verifies codex
+```
+
+Order is just the order you list — put the finder first, the verifier last. Each
+stage is printed (`── claude (initial) ──`, `── codex (verified) ──`); the final
+stage is what `--gate` / `--json` act on. Chains any number of reviewers.
 
 ## Review, fix, repeat
 
@@ -270,6 +289,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   `AIREV_SKIP=1` to skip one push by hand
 - [x] v0.11 — `airev off` / `on` / `status`: an explicit per-repo review toggle
   (reliable when auto-detection can't tell which remote is upstream)
+- [x] v0.12 — `--chain`: pipeline cross-review (one model verifies another's findings;
+  order is the `--cli` order)
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 

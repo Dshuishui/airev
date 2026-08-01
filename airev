@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.11.0"
+AIREV_VERSION="0.12.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -217,7 +217,7 @@ EOF
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0 merge=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0 merge=0 chain=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -230,6 +230,7 @@ cmd_review() {
       --deep)          deep=1; shift ;;             # two-pass: review, then verify each finding
       --with-tests)    withtests=1; shift ;;        # run the suite, feed results into the review
       --merge)         merge=1; shift ;;            # with 2+ reviewers: dedupe into one list
+      --chain)         chain=1; shift ;;            # 2+ reviewers: each verifies the prior's findings
       --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
@@ -257,6 +258,8 @@ cmd_review() {
   [ "${#reviewers[@]}" -eq 0 ] && { echo "airev: none of the configured reviewers are on PATH." >&2; return 3; }
   local cli; cli="$(IFS='+'; printf '%s' "${reviewers[*]}")"   # display label, e.g. claude+codex
   [ "$merge" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && { echo "airev: --merge needs 2+ reviewers — ignoring." >&2; merge=0; }
+  [ "$chain" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && { echo "airev: --chain needs 2+ reviewers — ignoring." >&2; chain=0; }
+  [ "$chain" -eq 1 ] && { deep=0; nocache=1; }   # chain is its own multi-pass; supersedes --deep, never cached
 
   # diff range (what will be pushed). `diffspec` is the real git arg; `range` is
   # the human label (becomes "working tree" on the on-demand fallback below).
@@ -377,8 +380,27 @@ cmd_review() {
     echo "airev: unchanged since last review — cached result (--no-cache to re-run):"
     printf '%s\n' "$out"
   else
-    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
-    if [ "$json" -eq 1 ]; then
+    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ "$chain" -eq 0 ] && printf 'airev: reviewing %s file(s) via %s… (Ctrl-C to skip)\n' "$nfiles" "$cli" >&2
+    if [ "$chain" -eq 1 ]; then
+      # chained cross-review: reviewers[0] finds; each next reviewer verifies the
+      # prior result (via the deep-verify instruction). Order = the reviewer list,
+      # so `--cli codex,claude` runs codex first. Final stage is what counts.
+      local i=0 c prevname="" cur
+      for c in "${reviewers[@]}"; do
+        if [ "$i" -eq 0 ]; then
+          [ "$json" -eq 0 ] && printf 'airev: chain — %s reviewing…\n' "$c" >&2
+          cur="$(printf '%s' "$diff" | _run_cli "$c" "$guide" 2>/dev/null | _filter_ignored)"
+          [ "$json" -eq 0 ] && { printf '── %s (initial) ──\n' "$c"; printf '%s\n' "$cur"; }
+        else
+          [ "$json" -eq 0 ] && printf 'airev: chain — %s verifying %s…\n' "$c" "$prevname" >&2
+          cur="$(printf '%s' "$diff" | _run_cli "$c" "$(_deep_verify_guide "$cur")" 2>/dev/null | _filter_ignored)"
+          [ "$json" -eq 0 ] && { printf '\n── %s (verified) ──\n' "$c"; printf '%s\n' "$cur"; }
+        fi
+        prevname="$c"; i=$((i + 1))
+      done
+      out="$cur"   # the FINAL reviewer's list is the result (gate / json / save)
+      [ -z "$out" ] && { [ "$json" -eq 1 ] && echo '[]' || echo "airev: chain produced nothing (not logged in?)."; return 0; }
+    elif [ "$json" -eq 1 ]; then
       out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
       [ -z "$out" ] && { echo '[]'; return 0; }
       # --merge: consolidate the union into one de-duplicated list (machine output)
@@ -405,7 +427,7 @@ cmd_review() {
         printf '%s\n' "$out"
       fi
     fi
-    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
+    [ "$json" -eq 0 ] && [ "$deep" -eq 0 ] && [ "$chain" -eq 0 ] && [ -n "$key" ] && { printf '%s' "$out" > "$cachedir/last.out" 2>/dev/null; printf '%s' "$key" > "$cachedir/last.sha" 2>/dev/null; }
   fi
 
   if [ "$json" -eq 1 ]; then
@@ -627,6 +649,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --deep         two-pass: review, then verify each finding (slower, higher signal)
       --with-tests   run the suite (TEST_CMD or autodetect) and feed results into the review
       --merge        with 2+ reviewers: add a pass that dedupes them into one list
+      --chain        with 2+ reviewers: each verifies the prior's findings (order = --cli list)
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)
