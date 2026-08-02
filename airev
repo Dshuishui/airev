@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.14.0"
+AIREV_VERSION="0.14.2"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -59,7 +59,15 @@ _run_cli() {
   local cli="$1" instruction="$2" diff; diff="$(cat)"
   case "$cli" in
     claude)  printf '%s' "$diff" | claude -p --output-format text "$instruction" ;;
-    codex)   codex exec "$instruction"$'\n\n'"$diff" ;;
+    codex)   # codex exec prints a header/tokens banner to stdout; --output-last-message
+             # captures ONLY the model's final answer, so we don't ingest that noise.
+             # </dev/null: codex exec otherwise blocks "Reading additional input
+             # from stdin…" (our stdin was already consumed by `cat` above).
+             local of; of="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null)"
+             if [ -n "$of" ]; then
+               codex exec --output-last-message "$of" "$instruction"$'\n\n'"$diff" </dev/null >/dev/null 2>&1
+               cat "$of" 2>/dev/null; rm -f "$of"
+             else codex exec "$instruction"$'\n\n'"$diff" </dev/null; fi ;;
     gemini)  printf '%s' "$diff" | gemini -p "$instruction" ;;
     copilot) printf '%s' "$diff" | copilot -p "$instruction" ;;
     *) echo "airev: unknown CLI '$cli' (supported: claude codex gemini copilot)" >&2; return 2 ;;
@@ -135,7 +143,9 @@ _hash() {
 _filter_ignored() {
   local root; root="$(_root)"
   local line path ln src
-  while IFS= read -r line; do
+  # `|| [ -n "$line" ]` also processes a final line with no trailing newline
+  # (e.g. codex's --output-last-message file), which plain `read` would drop.
+  while IFS= read -r line || [ -n "$line" ]; do
     if [[ "$line" == *'[P'* ]] && [[ "$line" =~ ([A-Za-z0-9_./-]+):([0-9]+) ]]; then
       path="${BASH_REMATCH[1]}"; ln="${BASH_REMATCH[2]}"
       if [ -n "$root" ] && [ -f "$root/$path" ]; then
@@ -715,7 +725,7 @@ do NOT push, do NOT touch anything unrelated. Findings:
 $(cat "$rf")"
   case "$cli" in
     claude) claude -p --permission-mode acceptEdits "$prompt" ;;
-    codex)  codex exec --full-auto "$prompt" ;;
+    codex)  codex exec --sandbox workspace-write "$prompt" </dev/null >/dev/null 2>&1 ;;
     *) echo "airev fix: '--fix' needs an agentic CLI (claude or codex); got '$cli'." >&2; return 2 ;;
   esac
 }
@@ -768,7 +778,7 @@ cmd_fix() {
 _to_json() {
   local first=1 line sev rest
   printf '['
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       \[P0\]*|\[P1\]*|\[P2\]*)
         sev="${line:1:2}"; rest="${line#*] }"
