@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.15.0"
+AIREV_VERSION="0.15.1"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -330,14 +330,15 @@ _pr_guide() {
 
 # Review a GitHub PR by URL or number (uses the `gh` CLI + your reviewers).
 cmd_pr() {
-  local target="" json=0 gate=0 chain=0 merge=0 cli_flag=""
+  local target="" json=0 gate=0 chain=0 merge=0 verify=0 cli_flag=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cli)   cli_flag="$2"; shift 2 ;;
-      --json)  json=1; shift ;;
-      --gate)  gate=1; shift ;;
-      --chain) chain=1; shift ;;
-      --merge) merge=1; shift ;;
+      --cli)    cli_flag="$2"; shift 2 ;;
+      --json)   json=1; shift ;;
+      --gate)   gate=1; shift ;;
+      --chain)  chain=1; shift ;;
+      --merge)  merge=1; shift ;;
+      --verify) verify=1; shift ;;
       -*) echo "airev pr: unknown arg '$1'" >&2; return 2 ;;
       *) target="$1"; shift ;;
     esac
@@ -432,9 +433,37 @@ cmd_pr() {
   [ "${#reviewers[@]}" -eq 0 ] && { echo "airev: no usable AI CLI found." >&2; return 3; }
   [ "$chain" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && chain=0
   [ "$merge" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && merge=0
+  [ "$verify" -eq 1 ] && { chain=0; merge=0; }
+
+  local out
+  if [ "$verify" -eq 1 ]; then
+    # agentic verify: clone the repo + check out the PR so the reviewer can READ the
+    # code to confirm findings. Isolated temp checkout, removed afterwards.
+    local -a vrev=(); local vc
+    for vc in "${reviewers[@]}"; do case "$vc" in claude|codex) vrev+=("$vc") ;; *) echo "airev: --verify skips '$vc' (needs claude/codex)." >&2 ;; esac; done
+    [ "${#vrev[@]}" -eq 0 ] && { echo "airev: --verify needs claude or codex." >&2; return 3; }
+    [ -n "$repo" ] || { echo "airev: --verify needs the repo — pass the full PR URL." >&2; return 3; }
+    local tmp; tmp="$(mktemp -d "${TMPDIR:-/tmp}/airev-pr.XXXXXX" 2>/dev/null)"
+    [ -n "$tmp" ] || { echo "airev: --verify: mktemp failed." >&2; return 3; }
+    echo "airev: --verify — cloning $repo & checking out PR #$num (shallow, slower)…" >&2
+    local ok=0
+    if [ "$use_gh" -eq 1 ]; then
+      gh repo clone "$repo" "$tmp" -- --depth 50 -q >/dev/null 2>&1 \
+        && ( cd "$tmp" && gh pr checkout "$num" >/dev/null 2>&1 ) && ok=1
+    fi
+    if [ "$ok" -eq 0 ]; then   # public fallback: no login needed
+      git clone --depth 50 -q "https://github.com/$repo.git" "$tmp" >/dev/null 2>&1 \
+        && ( cd "$tmp" && git fetch -q origin "pull/$num/head" >/dev/null 2>&1 && git checkout -q FETCH_HEAD >/dev/null 2>&1 ) && ok=1
+    fi
+    [ "$ok" -eq 1 ] || { echo "airev: --verify: couldn't clone/checkout PR #$num." >&2; rm -rf "$tmp"; return 3; }
+    [ "$json" -eq 0 ] && echo "── airev pr #$num (verify: ${vrev[*]}) ──"
+    local vprompt; vprompt="$(_verify_guide)"$'\n'"$guide"$'\n\n=== diff to review ===\n'"$diff"
+    out="$(_run_verify_all "$tmp" "$vprompt" ${vrev[@]+"${vrev[@]}"})"
+    rm -rf "$tmp"
+    [ "$json" -eq 0 ] && printf '%s\n' "$out"
+  else
 
   [ "$json" -eq 0 ] && echo "── airev pr #$num (${reviewers[*]}) ──"
-  local out
   if [ "$chain" -eq 1 ]; then
     local i=0 cur
     for c in "${reviewers[@]}"; do
@@ -460,6 +489,7 @@ cmd_pr() {
   else
     out="$(printf '%s' "$diff" | _run_reviewers "$guide" "${reviewers[@]}")"
     [ "$json" -eq 0 ] && printf '%s\n' "$out"
+  fi
   fi
 
   if [ "$json" -eq 1 ]; then printf '%s\n' "$out" | _to_json; echo; return 0; fi
@@ -922,7 +952,8 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --verify       agentic (claude/codex): read the repo to confirm each finding (slower, fewer false positives)
   airev pr <url|number> [opts]   review a GitHub PR: resolves the issue? new bugs? fits
                                  the architecture?  (public repo: no login; private: gh auth)
-                                 [--cli --chain --merge --gate --json]
+                                 [--cli --chain --merge --verify --gate --json]
+                                 --verify clones the PR and reads the code to confirm findings
   airev fix [opts]               review, let claude/codex fix the findings, re-review (loop)
       --cli <name>   claude | codex   (agentic CLI that can edit files)
       --base <ref>   diff base (default: upstream, else origin/main)

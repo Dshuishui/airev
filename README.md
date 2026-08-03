@@ -218,8 +218,13 @@ expert reviewer — not just the diff, but *against its intent*:
 airev pr https://github.com/acme/app/pull/42     # by URL (any repo)
 airev pr 42                                       # by number (inside that repo)
 airev pr 42 --cli claude,codex --chain           # cross-model / chained works here too
+airev pr 42 --verify                              # clone + read the code to confirm findings
 airev pr 42 --json          # or --merge / --gate
 ```
+
+`--verify` shallow-clones the repo, checks out the PR, and reviews it agentically so
+each finding is grounded in the real code (and false positives — e.g. "missing tests"
+in a repo that has no test suite — get dropped). Slower; needs `claude`/`codex`.
 
 It pulls the PR diff, title, description, and any **linked issue** (`Fixes #N`, or
 GitHub's "closing issues"), then checks:
@@ -344,8 +349,10 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   repos) against its linked issue, for new bugs, and for architectural fit
 - [x] v0.14 — parallel reviewers (panel wall-time ≈ 1×, not N×) + a progress spinner
   with elapsed time while you wait
-- [x] v0.15 — `--verify`: agentic review that reads the repo to confirm each finding
-  (real-CLI verified: claude via `--allowedTools`, codex via `--sandbox read-only`)
+- [x] v0.15 — `--verify`: agentic review that reads the repo to confirm each finding —
+  for `review` (current repo) and `pr` (shallow-clones + checks out the PR). Real-CLI
+  verified: on FM-Agent#170 it grounded every finding in cited code and dropped a
+  false "missing tests" flag after seeing the repo has no test suite.
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
