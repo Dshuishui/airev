@@ -3,7 +3,7 @@
 # already have logged in (claude / codex / gemini / copilot). No API keys, runs
 # locally, advisory by default. v0.1 (placeholder name).
 set -uo pipefail
-AIREV_VERSION="0.14.2"
+AIREV_VERSION="0.15.0"
 AIREV_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _root() { git rev-parse --show-toplevel 2>/dev/null; }
@@ -201,6 +201,63 @@ _run_reviewers() {
     o="$(cat "${tmps[$i]}" 2>/dev/null)"; rm -f "${tmps[$i]}"; i=$((i + 1))
     [ -z "$o" ] && continue
     [ "$multi" -eq 1 ] && printf '── %s ──\n' "$c"
+    printf '%s\n' "$o"
+  done
+}
+
+# --verify preamble: run the reviewer as an AGENT that can read the repo and must
+# confirm each finding against the real code before reporting it.
+_verify_guide() {
+  cat <<'EOF'
+You are reviewing a git diff INSIDE a checkout of the repository. You have READ
+access to the whole codebase (Read / Grep / Glob). Before you report ANY finding,
+open the relevant code — the modified function, its callers, related tests, and any
+type/constant/config it depends on — and CONFIRM the problem is real in this
+codebase. DROP anything you cannot confirm by reading. Do not speculate. For each
+finding, cite the file:line you actually checked as evidence.
+
+EOF
+}
+
+# Read-only agentic call: the CLI may read files in the current directory but must
+# not edit them. Prompt (instructions + diff) arrives as $2. claude/codex only.
+_run_verify() {
+  local cli="$1" prompt="$2"
+  case "$cli" in
+    claude)  # --allowedTools is variadic and eats trailing args, so the prompt MUST
+             # go via stdin with the flag last. Read/Grep/Glob only — no edit tools.
+             printf '%s' "$prompt" | claude -p --allowedTools Read,Grep,Glob 2>/dev/null ;;
+    codex)   local of; of="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null)"
+             if [ -n "$of" ]; then
+               codex exec --sandbox read-only --output-last-message "$of" "$prompt" </dev/null >/dev/null 2>&1
+               cat "$of" 2>/dev/null; rm -f "$of"
+             else codex exec --sandbox read-only "$prompt" </dev/null; fi ;;
+    *) echo "airev: --verify needs an agentic CLI (claude or codex), not '$cli'." >&2; return 2 ;;
+  esac
+}
+
+# Run each verifier IN PARALLEL from the repo root (so it can read the code), and
+# emit combined, airev-ignore-filtered, labelled output. Args: <root> <prompt> <cli>...
+_run_verify_all() {
+  local root="$1" prompt="$2"; shift 2
+  local multi=0; [ "$#" -gt 1 ] && multi=1
+  local -a tmps=() names=() pids=(); local c tf o
+  for c in "$@"; do
+    tf="$(mktemp "${TMPDIR:-/tmp}/airev.XXXXXX" 2>/dev/null)"
+    if [ -z "$tf" ]; then
+      o="$( cd "$root" 2>/dev/null && _run_verify "$c" "$prompt" 2>/dev/null | _filter_ignored )"
+      [ -n "$o" ] && { [ "$multi" -eq 1 ] && printf '── %s (verified) ──\n' "$c"; printf '%s\n' "$o"; }
+      continue
+    fi
+    ( cd "$root" 2>/dev/null; _run_verify "$c" "$prompt" 2>/dev/null | _filter_ignored > "$tf" ) &
+    tmps+=("$tf"); names+=("$c"); pids+=("$!")
+  done
+  [ "${#pids[@]}" -gt 0 ] && _spin "verifying (reading code) via $*" ${pids[@]+"${pids[@]}"}
+  local i=0
+  for c in ${names[@]+"${names[@]}"}; do
+    o="$(cat "${tmps[$i]}" 2>/dev/null)"; rm -f "${tmps[$i]}"; i=$((i + 1))
+    [ -z "$o" ] && continue
+    [ "$multi" -eq 1 ] && printf '── %s (verified) ──\n' "$c"
     printf '%s\n' "$o"
   done
 }
@@ -415,7 +472,7 @@ cmd_pr() {
 }
 
 cmd_review() {
-  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0 merge=0 chain=0
+  local cli_flag="" base_flag="" gate=0 json=0 confirm=0 nocache=0 clevel_flag="" wt=0 deep=0 withtests=0 merge=0 chain=0 verify=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli)           cli_flag="$2"; shift 2 ;;
@@ -429,6 +486,7 @@ cmd_review() {
       --with-tests)    withtests=1; shift ;;        # run the suite, feed results into the review
       --merge)         merge=1; shift ;;            # with 2+ reviewers: dedupe into one list
       --chain)         chain=1; shift ;;            # 2+ reviewers: each verifies the prior's findings
+      --verify)        verify=1; shift ;;           # agentic: read the repo to confirm each finding
       --worktree)      wt=1; shift ;;               # review base..working tree (used by fix)
       *) echo "airev review: unknown arg '$1'" >&2; return 2 ;;
     esac
@@ -458,6 +516,7 @@ cmd_review() {
   [ "$merge" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && { echo "airev: --merge needs 2+ reviewers — ignoring." >&2; merge=0; }
   [ "$chain" -eq 1 ] && [ "${#reviewers[@]}" -le 1 ] && { echo "airev: --chain needs 2+ reviewers — ignoring." >&2; chain=0; }
   [ "$chain" -eq 1 ] && { deep=0; nocache=1; }   # chain is its own multi-pass; supersedes --deep, never cached
+  [ "$verify" -eq 1 ] && { chain=0; deep=0; merge=0; nocache=1; }   # verify is its own agentic mode
 
   # diff range (what will be pushed). `diffspec` is the real git arg; `range` is
   # the human label (becomes "working tree" on the on-demand fallback below).
@@ -571,7 +630,18 @@ cmd_review() {
   [ -n "$cachedir" ] && key="$(printf '%s' "$cli|$guide|$diff|merge=$merge" | _hash)"
 
   local out cached=0
-  if [ "$json" -eq 0 ] && [ "$nocache" -eq 0 ] && [ -n "$key" ] \
+  if [ "$verify" -eq 1 ]; then
+    # agentic: each reviewer reads the repo to CONFIRM findings before reporting.
+    local root2; root2="$(_root)"; [ -n "$root2" ] || root2="."
+    local -a vrev=(); local vc
+    for vc in "${reviewers[@]}"; do case "$vc" in claude|codex) vrev+=("$vc") ;; *) echo "airev: --verify skips '$vc' (needs claude/codex)." >&2 ;; esac; done
+    [ "${#vrev[@]}" -eq 0 ] && { echo "airev: --verify needs claude or codex." >&2; return 3; }
+    [ "$json" -eq 0 ] && printf 'airev: verify — reading the repo to confirm findings (slower)…\n' >&2
+    local vprompt; vprompt="$(_verify_guide)"$'\n'"$guide"$'\n\n=== diff to review ===\n'"$diff"
+    out="$(_run_verify_all "$root2" "$vprompt" ${vrev[@]+"${vrev[@]}"})"
+    [ -z "$out" ] && { [ "$json" -eq 1 ] && echo '[]' || echo "airev: verify produced nothing (not logged in?)."; return 0; }
+    [ "$json" -eq 0 ] && printf '%s\n' "$out"
+  elif [ "$json" -eq 0 ] && [ "$nocache" -eq 0 ] && [ -n "$key" ] \
      && [ -f "$cachedir/last.sha" ] && [ "$(cat "$cachedir/last.sha" 2>/dev/null)" = "$key" ] \
      && [ -f "$cachedir/last.out" ]; then
     out="$(cat "$cachedir/last.out")"; cached=1
@@ -849,6 +919,7 @@ airev $AIREV_VERSION — AI code review before you push (uses your logged-in AI 
       --with-tests   run the suite (TEST_CMD or autodetect) and feed results into the review
       --merge        with 2+ reviewers: add a pass that dedupes them into one list
       --chain        with 2+ reviewers: each verifies the prior's findings (order = --cli list)
+      --verify       agentic (claude/codex): read the repo to confirm each finding (slower, fewer false positives)
   airev pr <url|number> [opts]   review a GitHub PR: resolves the issue? new bugs? fits
                                  the architecture?  (public repo: no login; private: gh auth)
                                  [--cli --chain --merge --gate --json]

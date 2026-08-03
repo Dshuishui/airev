@@ -41,6 +41,7 @@ Advisory by default (never blocks your push); opt into a gate when you want one.
 | `airev review --with-tests` | run the test suite; feed real failures into the review |
 | `airev review --cli a,b [--merge]` | cross-model review with several CLIs (optionally de-duped) |
 | `airev review --cli a,b --chain` | pipeline: `a` reviews, then `b` verifies `a`'s findings |
+| `airev review --verify` | agentic: reads the repo to confirm each finding is real (fewer false positives) |
 | `airev review --gate` · `--json` | block on `[P0]`/`[P1]` · machine-readable output (for CI) |
 | `airev pr <url\|n>` | review a GitHub PR: resolves its issue? new bugs? fits the architecture? |
 | `airev fix` | let claude/codex fix the findings, re-review, loop until clean |
@@ -166,6 +167,23 @@ airev review --cli codex,claude --chain   # codex finds → claude verifies code
 Order is just the order you list — put the finder first, the verifier last. Each
 stage is printed (`── claude (initial) ──`, `── codex (verified) ──`); the final
 stage is what `--gate` / `--json` act on. Chains any number of reviewers.
+
+## Verified review — read the code, don't guess
+
+A plain diff review *speculates* about anything outside the hunk ("if a caller does
+X, this breaks"). `--verify` instead runs the reviewer as an **agent** that reads the
+actual repository (`Read`/`Grep`/`Glob`, read-only) to **confirm each finding against
+the real code** — and drops anything it can't confirm. Fewer false positives, at the
+cost of being slower (it reads files on demand).
+
+```bash
+airev review --verify              # claude/codex read the repo to back each finding
+```
+
+Only `claude`/`codex` support it (they're agentic); it reads on demand, so it scales
+to any repo size — no need to stuff the whole codebase into a prompt. The fast
+diff-only review stays the default; reach for `--verify` when a finding's correctness
+matters and you want it grounded in the code, not guessed.
 
 ## Review, fix, repeat
 
@@ -326,6 +344,8 @@ whole trick — no keys, no vendor lock-in, and adding a new CLI is one line.
   repos) against its linked issue, for new bugs, and for architectural fit
 - [x] v0.14 — parallel reviewers (panel wall-time ≈ 1×, not N×) + a progress spinner
   with elapsed time while you wait
+- [x] v0.15 — `--verify`: agentic review that reads the repo to confirm each finding
+  (real-CLI verified: claude via `--allowedTools`, codex via `--sandbox read-only`)
 - [ ] v1.0 — npm / brew publish (packaging ready: `package.json`, `Formula/`, `PUBLISHING.md`),
   more CLIs verified (codex/gemini)
 
